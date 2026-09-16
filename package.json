@@ -15,6 +15,7 @@
     "lint": "biome check --fix src/",
     "dev": "parcel index.html --port 1235",
     "build": "parcel build index.html --public-url /roulette/ && node scripts/build-sw.js",
+    "build:vercel": "parcel build index.html --public-url / && node scripts/build-sw.js",
     "simulate": "tsx scripts/simulate.ts"
   },
   "dependencies": {
