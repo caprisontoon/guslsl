@@ -4,12 +4,15 @@
  *   yarn verify:odds            기본 300판
  *   yarn verify:odds 1000       판 수 지정
  *
- * 이 게임은 확률을 물리 엔진으로 조작하지 않는다. 설정 확률을 구슬 개수로 환산하고
- * (예: 꽝 63% -> 꽝 구슬 63개), 어떤 구슬이 어느 출발 칸에 놓일지는 셔플로 정한다.
+ * 이 게임은 확률을 물리 엔진으로 조작하지 않는다. 배정은 두 단계다.
+ *
+ *   1) 서버가 설정 확률을 구슬 개수로 환산해(꽝 63% -> 꽝 63개) 번호에 무작위 배정한다.
+ *      이 번호 -> 상품 매핑은 클라이언트에 내려가지 않는다.
+ *   2) 클라이언트는 번호만 적힌 구슬을 굴리고, 엔진이 번호를 출발 칸에 셔플해 배치한다.
  *
  * 그래서 출발 칸마다 유불리가 있어도(아래 '칸별 승률'에 그대로 드러난다) 상품별 당첨
- * 확률은 정확히 개수 비율이 된다. 라벨을 칸에 배정하는 순열이 균등하고 물리와 독립이기
- * 때문이다. 이 스크립트는 그 성질을 실제 물리로 돌려서 확인한다.
+ * 확률은 정확히 개수 비율이 된다. 두 배정 순열이 모두 균등하고 물리와 독립이기 때문이다.
+ * 이 스크립트는 그 성질을 실제 물리로 돌려서 확인한다.
  */
 import * as fs from 'node:fs';
 import Box2DFactory from 'box2d-wasm';
@@ -43,11 +46,17 @@ function shuffle<T>(input: T[]): T[] {
   return array;
 }
 
-/** 한 판을 굴려서 1등으로 골인한 출발 칸 번호를 돌려준다 */
-async function raceOnce(mapIdx: number, n: number): Promise<number | null> {
+/**
+ * 한 판을 굴려서 1등으로 골인한 출발 칸 번호를 돌려준다.
+ *
+ * 물리 인스턴스는 호출자가 만들어 넘긴다. 판마다 새로 만들면 wasm 모듈이 쌓여
+ * 수천 판에서 메모리가 터진다. 대신 구슬과 스테이지를 매 판 다시 만들어
+ * 같은 조건에서 시작하게 한다 (부서지는 지형이 있는 맵은 판이 지나며 깎인다).
+ */
+function raceOnce(p: NodePhysics, mapIdx: number, n: number): number | null {
   const stage = stages[mapIdx];
-  const p = new NodePhysics();
-  await p.init();
+  p.clearMarbles();
+  p.clear();
   p.createStage(stage);
 
   // Marble 생성자와 같은 배치
@@ -149,6 +158,9 @@ async function main() {
   const winsBySlot = new Array<number>(n).fill(0);
   let unfinished = 0;
 
+  const physics = new NodePhysics();
+  await physics.init();
+
   const startedAt = Date.now();
   for (let r = 0; r < rounds; r++) {
     // 1) 서버: 상품을 번호에 배정한다 (LocalGameApi.startRound 과 같은 방식)
@@ -161,7 +173,7 @@ async function main() {
       numberOfSlot[slots[i]] = i + 1;
     }
 
-    const winnerSlot = await raceOnce(config.mapIndex, n);
+    const winnerSlot = raceOnce(physics, config.mapIndex, n);
     if (winnerSlot === null) {
       unfinished++;
       continue;
