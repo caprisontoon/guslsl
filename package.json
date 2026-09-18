@@ -1,5 +1,5 @@
 {
-  "name": "roulette",
+  "name": "toonland-corn-race",
   "version": "1.0.0",
   "license": "MIT",
   "devDependencies": {
@@ -13,10 +13,11 @@
   },
   "scripts": {
     "lint": "biome check --fix src/",
-    "dev": "parcel index.html --port 1235",
-    "build": "parcel build index.html --public-url /roulette/ && node scripts/build-sw.js",
-    "build:vercel": "parcel build index.html --public-url / && node scripts/build-sw.js",
-    "simulate": "tsx scripts/simulate.ts"
+    "dev": "parcel index.html admin.html --port 1235",
+    "build": "parcel build index.html admin.html --public-url /roulette/ && node scripts/build-sw.js",
+    "build:vercel": "parcel build index.html admin.html --public-url /",
+    "simulate": "tsx scripts/simulate.ts",
+    "verify:odds": "tsx scripts/verify-odds.ts"
   },
   "dependencies": {
     "box2d-wasm": "^7.0.0"

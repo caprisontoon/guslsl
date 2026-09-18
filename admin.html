@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>강냉이 레이스 관리자 - 투네랜드</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png">
+  <link rel='stylesheet' href='assets/admin.scss'/>
+</head>
+<body>
+<header class="ad-top">
+  <a class="ad-top__brand" href="index.html">투네랜드 관리자</a>
+  <a class="ad-top__link" href="index.html">게임 화면으로 →</a>
+</header>
+
+<div class="ad-shell">
+  <nav class="ad-nav">
+    <p class="ad-nav__group">투네랜드</p>
+    <a class="ad-nav__item" href="#">회원조회</a>
+    <a class="ad-nav__item" href="#">투네랜드 당첨왕</a>
+    <a class="ad-nav__item" href="#">투네랜드 럭키픽</a>
+    <a class="ad-nav__item is-active" href="#">투네랜드 강냉이 레이스</a>
+    <p class="ad-nav__group">강냉이 레이스</p>
+    <button type="button" class="ad-nav__sub is-active" data-tab="prizes">상품 목록</button>
+    <button type="button" class="ad-nav__sub" data-tab="odds">확률 설정</button>
+    <button type="button" class="ad-nav__sub" data-tab="revisions">확률 변경 이력</button>
+    <button type="button" class="ad-nav__sub" data-tab="stats">통계</button>
+  </nav>
+
+  <main class="ad-main">
+    <div class="ad-banner" id="pendingBanner" hidden></div>
+
+    <!-- 상품 목록 -->
+    <section class="ad-page" data-page="prizes">
+      <div class="ad-head">
+        <h1 class="ad-head__title">상품 목록</h1>
+        <button type="button" class="ad-btn ad-btn--primary" id="btnNewPrize">상품 생성</button>
+      </div>
+
+      <div class="ad-card">
+        <table class="ad-table">
+          <thead>
+          <tr>
+            <th>번호</th>
+            <th>상품 이름</th>
+            <th>아이템 종류</th>
+            <th>지급</th>
+            <th>강냉이 환산값</th>
+            <th>확률</th>
+            <th>당첨 인원</th>
+            <th>지급 수량</th>
+            <th>노출</th>
+            <th>기능</th>
+          </tr>
+          </thead>
+          <tbody id="prizeRows"></tbody>
+        </table>
+        <p class="ad-empty" id="prizeEmpty" hidden>등록된 상품이 없습니다.</p>
+      </div>
+
+      <form class="ad-card ad-form" id="prizeForm" hidden>
+        <h2 class="ad-card__title" id="prizeFormTitle">상품 생성</h2>
+        <input type="hidden" id="prizeId">
+        <div class="ad-form__grid">
+          <label class="ad-field">
+            <span class="ad-field__label">상품 이름</span>
+            <input type="text" id="prizeName" maxlength="20" required placeholder="예) 스타벅스 아메리카노">
+            <span class="ad-field__hint">구슬에 표시되는 이름입니다. / 와 * 는 쓸 수 없습니다.</span>
+          </label>
+          <label class="ad-field">
+            <span class="ad-field__label">아이템 종류</span>
+            <select id="prizeKind">
+              <option value="corn">강냉이</option>
+              <option value="inventory">인벤토리</option>
+              <option value="cash">캐시</option>
+            </select>
+          </label>
+          <label class="ad-field">
+            <span class="ad-field__label">지급</span>
+            <input type="number" id="prizePayout" min="0" step="1" required>
+            <span class="ad-field__hint" id="payoutHint">강냉이 수량을 입력하세요.</span>
+          </label>
+          <label class="ad-field">
+            <span class="ad-field__label">강냉이 환산값</span>
+            <input type="number" id="prizeCornValue" min="0" step="1" required>
+            <span class="ad-field__hint">통계와 기대 수지 계산에 쓰입니다. 1캐시 = 25강냉이</span>
+          </label>
+          <label class="ad-field">
+            <span class="ad-field__label">당첨 확률 (%)</span>
+            <input type="number" id="prizeProbability" min="0" max="100" step="0.01" required>
+          </label>
+          <label class="ad-field">
+            <span class="ad-field__label">당첨 인원</span>
+            <input type="number" id="prizeWinnerLimit" min="0" step="1" required>
+            <span class="ad-field__hint">0을 입력하면 무제한입니다. 소진되면 자동으로 숨김 처리됩니다.</span>
+          </label>
+        </div>
+        <div class="ad-form__actions">
+          <button type="button" class="ad-btn" id="btnCancelPrize">취소</button>
+          <button type="submit" class="ad-btn ad-btn--primary">저장</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- 확률 설정 -->
+    <section class="ad-page" data-page="odds" hidden>
+      <div class="ad-head">
+        <h1 class="ad-head__title">확률 설정</h1>
+      </div>
+
+      <form class="ad-card ad-form" id="oddsForm">
+        <div class="ad-form__grid">
+          <label class="ad-field">
+            <span class="ad-field__label">1회 참가비 (강냉이)</span>
+            <input type="number" id="cfgEntryFee" min="0" step="10" required>
+          </label>
+          <label class="ad-field">
+            <span class="ad-field__label">꽝 기본 혜택 (강냉이)</span>
+            <input type="number" id="cfgConsolation" min="0" step="10" required>
+            <span class="ad-field__hint">꽝이 나와도 지급되는 강냉이입니다.</span>
+          </label>
+          <label class="ad-field">
+            <span class="ad-field__label">구슬 수 (확률 해상도)</span>
+            <input type="number" id="cfgFieldSize" min="2" max="500" step="1" required>
+            <span class="ad-field__hint">100이면 1% 단위, 200이면 0.5% 단위까지 표현됩니다.</span>
+          </label>
+          <label class="ad-field">
+            <span class="ad-field__label">기본 맵</span>
+            <select id="cfgMap"></select>
+          </label>
+        </div>
+
+        <h2 class="ad-card__title">상품별 당첨 확률</h2>
+        <table class="ad-table ad-table--compact">
+          <thead>
+          <tr>
+            <th>상품</th>
+            <th>설정 확률 (%)</th>
+            <th>실제 확률 (%)</th>
+            <th>구슬 수</th>
+          </tr>
+          </thead>
+          <tbody id="oddsRows"></tbody>
+        </table>
+
+        <div class="ad-summary" id="oddsSummary"></div>
+        <div class="ad-issues" id="oddsIssues"></div>
+
+        <h2 class="ad-card__title">적용 시점</h2>
+        <div class="ad-apply">
+          <label class="ad-radio">
+            <input type="radio" name="applyMode" value="now" checked>
+            <span>즉시</span>
+          </label>
+          <label class="ad-radio">
+            <input type="radio" name="applyMode" value="schedule">
+            <span>예약</span>
+          </label>
+          <input type="datetime-local" id="cfgScheduleAt" disabled>
+          <input type="text" id="cfgMemo" placeholder="변경 사유 (선택)" maxlength="60">
+        </div>
+
+        <div class="ad-form__actions">
+          <button type="button" class="ad-btn" id="btnResetOdds">되돌리기</button>
+          <button type="submit" class="ad-btn ad-btn--primary">설정 저장</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- 확률 변경 이력 -->
+    <section class="ad-page" data-page="revisions" hidden>
+      <div class="ad-head">
+        <h1 class="ad-head__title">확률 변경 이력</h1>
+      </div>
+      <div class="ad-card">
+        <table class="ad-table">
+          <thead>
+          <tr>
+            <th>일시</th>
+            <th>적용</th>
+            <th>참가비</th>
+            <th>기본 혜택</th>
+            <th>구슬 수</th>
+            <th>확률 구성</th>
+            <th>사유</th>
+          </tr>
+          </thead>
+          <tbody id="revisionRows"></tbody>
+        </table>
+        <p class="ad-empty" id="revisionEmpty" hidden>변경 이력이 없습니다.</p>
+      </div>
+    </section>
+
+    <!-- 통계 -->
+    <section class="ad-page" data-page="stats" hidden>
+      <div class="ad-head">
+        <h1 class="ad-head__title">통계</h1>
+      </div>
+
+      <div class="ad-card">
+        <h2 class="ad-card__title">일자별 도전 통계</h2>
+        <table class="ad-table">
+          <thead>
+          <tr>
+            <th>일자</th>
+            <th>총 도전</th>
+            <th>당첨</th>
+            <th>꽝</th>
+            <th>소진 강냉이</th>
+          </tr>
+          </thead>
+          <tbody id="dailyRows"></tbody>
+        </table>
+        <p class="ad-empty" id="dailyEmpty" hidden>집계된 기록이 없습니다.</p>
+      </div>
+
+      <div class="ad-card">
+        <h2 class="ad-card__title">상품별 당첨 통계</h2>
+        <table class="ad-table">
+          <thead>
+          <tr>
+            <th>순위</th>
+            <th>상품</th>
+            <th>당첨 횟수</th>
+          </tr>
+          </thead>
+          <tbody id="prizeStatRows"></tbody>
+        </table>
+        <p class="ad-empty" id="prizeStatEmpty" hidden>집계된 기록이 없습니다.</p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="ad-toast" id="adToast" hidden></div>
+
+<script type="module" src="./src/admin/index.ts"></script>
+</body>
+</html>

@@ -1,21 +1,11 @@
-import {
-  type AdOverlayMode,
-  type AdOverlayState,
-  type AdRect,
-  closeButtonSize,
-  drawAdOverlay,
-  drawCloseCircle,
-} from './adRenderer';
 import type { Camera } from './camera';
 import { canvasHeight, canvasWidth, initialZoom, Themes, winnerAreaHeight } from './data/constants';
 import type { StageDef } from './data/maps';
 import type { GameObject } from './gameObject';
-import { KeywordService } from './keywordService';
 import type { Marble } from './marble';
 import { MINIMAP_INSET, MINIMAP_WIDTH } from './minimap';
 import type { WinnerRange } from './options';
 import type { ParticleManager } from './particleManager';
-import type { RoundAd } from './types/Ad.type';
 import type { ColorTheme } from './types/ColorTheme';
 import type { MapEntityState } from './types/MapEntity.type';
 import type { VectorLike } from './types/VectorLike';
@@ -44,10 +34,38 @@ const RESULT_COLUMN_MAX_WIDTH = 280;
 const PROGRESS_MAX_WIDTH_RATIO = 0.3;
 const PROGRESS_ACCENT = 'rgba(255, 215, 0, 0.8)';
 
-export type AdHit = { type: 'close' } | { type: 'link'; url: string };
+export type Rect = { x: number; y: number; w: number; h: number };
 
-function inRect(rect: AdRect | undefined, x: number, y: number): boolean {
+function inRect(rect: Rect | undefined, x: number, y: number): boolean {
   return !!rect && x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
+}
+
+/** 결과 팝업 우상단 닫기 버튼. 팝업 꼭지점에 중심을 걸쳐 그린다 */
+function drawCloseCircle(ctx: CanvasRenderingContext2D, cx: number, cy: number, size: number, fill: string): Rect {
+  const r = size / 2;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = Math.max(1, size * 0.08);
+  ctx.stroke();
+
+  const arm = r * 0.42;
+  ctx.beginPath();
+  ctx.moveTo(cx - arm, cy - arm);
+  ctx.lineTo(cx + arm, cy + arm);
+  ctx.moveTo(cx + arm, cy - arm);
+  ctx.lineTo(cx - arm, cy + arm);
+  ctx.stroke();
+  ctx.restore();
+
+  return { x: cx - r, y: cy - r, w: size, h: size };
+}
+
+function closeButtonSize(sceneHeight: number): number {
+  return Math.min(44, Math.max(24, sceneHeight * 0.05));
 }
 
 export class RouletteRenderer {
@@ -59,22 +77,9 @@ export class RouletteRenderer {
 
   protected _images: { [key: string]: HTMLImageElement } = {};
   protected _theme: ColorTheme = Themes.dark;
-  private _ad: RoundAd | null = null;
-  private _adImageCache: Map<string, HTMLImageElement> = new Map();
-  private _adOverlay: AdOverlayState | null = null;
-  private _resultCloseRect: AdRect | null = null;
+  private _resultCloseRect: Rect | null = null;
   private _resultPopupClosed = false;
   private _lastResult: Marble[] | null = null;
-  protected _keywordService: KeywordService;
-
-  constructor() {
-    this._keywordService = this.createKeywordService();
-  }
-
-  protected createKeywordService(): KeywordService {
-    return new KeywordService();
-  }
-
   get width() {
     return this._sceneCanvas.width;
   }
@@ -92,7 +97,7 @@ export class RouletteRenderer {
   }
 
   async init() {
-    await Promise.all([this._load(), this._keywordService.init()]);
+    await this._load();
 
     this._canvas = document.createElement('canvas');
     this._canvas.width = canvasWidth;
@@ -108,7 +113,7 @@ export class RouletteRenderer {
       alpha: false,
     }) as CanvasRenderingContext2D;
 
-    document.body.appendChild(this._canvas);
+    (document.querySelector('[data-race-canvas]') ?? document.body).appendChild(this._canvas);
 
     const resizing = (entries?: ResizeObserverEntry[]) => {
       const realSize = entries ? entries[0].contentRect : this._canvas.getBoundingClientRect();
@@ -166,116 +171,11 @@ export class RouletteRenderer {
   }
 
   private getMarbleImage(name: string): CanvasImageSource | undefined {
-    // Priority 1: Hardcoded images
-    if (this._images[name]) {
-      return this._images[name];
-    }
-    // Priority 2: Keyword sprites from API
-    return this._keywordService.getSprite(name);
+    return this._images[name];
   }
 
   protected onBeforeEntities(): void {}
   protected onAfterScene(): void {}
-
-  setAd(ad: RoundAd | null): void {
-    this._ad = ad;
-    if (!ad) return;
-    this.preloadAdImages([...Object.values(ad.creatives), ad.qrImage]);
-  }
-
-  /** 소재를 미리 받아둔다. 여기서 만든 엘리먼트를 나중에 그대로 그리므로 캐시 헤더와 무관하게 즉시 뜬다 */
-  preloadAdImages(srcs: (string | undefined)[]): void {
-    for (const src of srcs) {
-      if (src) this.cacheAdImage(src);
-    }
-  }
-
-  private adImage(src?: string): HTMLImageElement | undefined {
-    return src ? this._adImageCache.get(src) : undefined;
-  }
-
-  private cacheAdImage(src: string): HTMLImageElement {
-    const cached = this._adImageCache.get(src);
-    if (cached) return cached;
-    const el = new Image();
-    el.crossOrigin = 'anonymous';
-    el.src = src;
-    this._adImageCache.set(src, el);
-    return el;
-  }
-
-  showAdOverlay(mode: AdOverlayMode): void {
-    if (!this._ad || !this._ad.slots?.includes(mode)) return;
-    this._adOverlay = { mode, ad: this._ad, since: performance.now(), endingSince: undefined };
-  }
-
-  getAdHitAt(x: number, y: number): AdHit | null {
-    const overlay = this._adOverlay;
-    if (!overlay || overlay.endingSince !== undefined) return null;
-
-    if (inRect(overlay.closeRect, x, y)) return { type: 'close' };
-
-    const link = overlay.ad.linkUrl;
-    if (link && inRect(overlay.clickRect, x, y)) return { type: 'link', url: link };
-
-    return null;
-  }
-
-  hideAdOverlay(): void {
-    if (this._adOverlay && this._adOverlay.endingSince === undefined) {
-      this._adOverlay.endingSince = performance.now();
-    }
-  }
-
-  private renderAdOverlay(renderParameters: RenderParameters): void {
-    const overlay = this._adOverlay;
-    if (!overlay) return;
-
-    if (overlay.mode === 'result' && !renderParameters.result) {
-      this.hideAdOverlay();
-    }
-
-    const scale = this._canvas.width / this._sceneCanvas.width;
-    try {
-      this._displayCtx.save();
-      this._displayCtx.scale(scale, scale);
-      const alive = drawAdOverlay(this._displayCtx, this._sceneCanvas.width, this._sceneCanvas.height, overlay, {
-        preroll: this.adImage(overlay.ad.creatives.preroll),
-        result: this.adImage(overlay.ad.creatives.result),
-        qr: this.adImage(overlay.ad.qrImage),
-      });
-      this._displayCtx.restore();
-      if (!alive) this._adOverlay = null;
-    } catch (e) {
-      this._displayCtx.restore();
-      console.error('[ads] 오버레이 렌더링 실패, 이번 노출은 건너뜁니다', e);
-      this._adOverlay = null;
-    }
-  }
-
-  private renderAdBoards(stage: StageDef): void {
-    const ad = this._ad;
-    if (!ad || !ad.slots?.includes('goal') || !stage.adBoards?.length) return;
-
-    const img = this.adImage(ad.creatives.goal);
-    if (!img?.complete || img.naturalWidth === 0) return;
-
-    try {
-      this.ctx.save();
-      for (const board of stage.adBoards) {
-        const w = board.w ?? 4;
-        const h = board.h ?? 1;
-        const x = board.x - w / 2;
-        const y = board.y - h / 2;
-        this.ctx.drawImage(img, x, y, w, h);
-      }
-    } catch (e) {
-      console.error('[ads] 광고판 렌더링 실패, 이번 게재는 건너뜁니다', e);
-      this._ad = null;
-    } finally {
-      this.ctx.restore();
-    }
-  }
 
   render(renderParameters: RenderParameters, uiObjects: UIObject[]) {
     this._theme = renderParameters.theme;
@@ -289,7 +189,6 @@ export class RouletteRenderer {
     this.ctx.font = '0.4pt sans-serif';
     this.ctx.lineWidth = 3 / (renderParameters.camera.zoom + initialZoom);
     renderParameters.camera.renderScene(this.ctx, () => {
-      this.renderAdBoards(renderParameters.stage);
       this.onBeforeEntities();
       this.renderEntities(renderParameters.entities);
       this.renderEffects(renderParameters);
@@ -306,7 +205,6 @@ export class RouletteRenderer {
     this.renderResult(renderParameters);
 
     this._displayCtx.drawImage(this._sceneCanvas, 0, 0, this._canvas.width, this._canvas.height);
-    this.renderAdOverlay(renderParameters);
   }
 
   private renderEntities(entities: MapEntityState[]) {
@@ -603,10 +501,10 @@ export class RouletteRenderer {
     this.ctx.lineWidth = 4;
     const textRightX = marbleCenterX - marbleSize / 2 - 20;
     if (theme.winnerOutline) {
-      this.ctx.strokeText('Winner', textRightX, this._sceneCanvas.height - 120 + WINNER_TEXT_OFFSET);
+      this.ctx.strokeText('1등', textRightX, this._sceneCanvas.height - 120 + WINNER_TEXT_OFFSET);
     }
 
-    this.ctx.fillText('Winner', textRightX, this._sceneCanvas.height - 120 + WINNER_TEXT_OFFSET);
+    this.ctx.fillText('1등', textRightX, this._sceneCanvas.height - 120 + WINNER_TEXT_OFFSET);
     this.ctx.font = 'bold 72px sans-serif';
     this.ctx.fillStyle = `hsl(${winner.hue} 100% ${theme.marbleLightness})`;
     if (theme.winnerOutline) {

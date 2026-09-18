@@ -1,47 +1,77 @@
-# Marble roulette
+# 강냉이 레이스
 
-This is a lucky draw by dropping marbles.
+투네이션 **투네랜드**의 미니게임입니다. 강냉이를 걸고 구슬 레이스를 돌려,
+1등으로 결승선에 들어온 구슬에 적힌 상품을 받습니다. 당첨왕·럭키픽과 마찬가지로
+강냉이 소진 창구 역할을 합니다.
 
-[Demo]( https://lazygyu.github.io/roulette )
+- 게임 화면: `index.html`
+- 관리자 화면: `admin.html`
+- 백엔드 연동 방법: [INTEGRATION.md](./INTEGRATION.md)
 
-# Requirements
+## 게임 방식
 
-- Typescript
-- Parcel
-- box2d-wasm
+1. 도전하기를 누르면 **참가비만큼 강냉이가 즉시 차감**됩니다.
+2. 서버가 관리자 설정 확률대로 상품을 만들어 **번호에 배정**합니다. 꽝 63%면 꽝 63개,
+   상품 A 10%면 A 10개. 이 번호 → 상품 매핑은 서버만 알고 있습니다.
+3. 구슬에는 **번호만** 적혀 있고, 출발 위치는 매 판 무작위로 섞입니다.
+4. 1등으로 골인한 번호를 서버에 물어 상품을 받습니다. 꽝이면 기본 혜택 강냉이를
+   지급합니다. (당첨왕의 번호판 공개와 같은 방식입니다)
 
-# Development
+## 확률이 정확한 이유
+
+물리 엔진을 건드려 결과를 정하지 않습니다. 대신 **확률을 구슬 개수로 환산**하고,
+배정에만 무작위를 씁니다 (상품 → 번호, 번호 → 출발 칸).
+
+출발 칸에는 유불리가 있습니다. 8000판을 돌려보면 칸별 승리 수가 0회에서 485회까지
+갈립니다(균등하면 80회, 최대 6배). 그런데도 두 배정 순열이 균등하고 물리와 독립이므로
+**P(상품 당첨) = 해당 상품의 구슬 수 / 전체 구슬 수** 가 정확히 성립합니다.
+칸의 유불리는 상쇄됩니다.
+
+실제 물리로 검증할 수 있습니다.
 
 ```shell
-> yarn
-> yarn dev
+yarn verify:odds 8000    # 8000판을 돌려 설정 확률과 실측을 카이제곱으로 대조
 ```
 
-# Build
+8000판 실측에서 카이제곱 적합도 검정 10.55 (자유도 5, 유의수준 0.001 기준값 20.52)로
+설정과 일치했습니다. 배정 로직만 떼어내 칸 편향을 극단으로 넣고 100만 판을 돌린
+결과도 값 오차 0.05%p 이내였습니다.
+
+확률 해상도는 관리자의 **구슬 수** 설정이 정합니다. 100개면 1% 단위, 200개면 0.5%
+단위까지 오차 없이 표현되고, 표현할 수 없는 확률은 관리자 화면이 경고합니다.
+
+## 관리자 기능
+
+- **상품 목록 / 생성** — 상품 이름, 아이템 종류(강냉이·인벤토리·캐시), 지급값,
+  강냉이 환산값, 당첨 확률, 당첨 인원(0이면 무제한), 노출·숨김
+- **확률 설정** — 참가비, 꽝 기본 혜택, 구슬 수, 기본 맵, 상품별 확률.
+  설정 확률과 실제 확률을 나란히 보여주고 한 판 기대 수지를 계산합니다.
+  적용 시점은 즉시 또는 예약을 고를 수 있습니다.
+- **확률 변경 이력** — 변경 시각, 적용 방식, 확률 구성, 사유
+- **통계** — 일자별 도전·당첨·꽝 집계, 상품별 당첨 횟수
+
+당첨 인원이 소진된 상품은 자동으로 필드에서 빠지고, 그 확률은 꽝으로 넘어갑니다.
+
+## 개발
 
 ```shell
-> yarn build
+yarn
+yarn dev      # http://localhost:1235
+yarn build    # dist/ 에 정적 파일 생성
+yarn lint
 ```
 
-# License
+Typescript + Parcel + box2d-wasm 을 씁니다.
 
-The source code is licensed under the [MIT License](./LICENSE).
+## 라이선스
 
-## Trademark
+소스 코드는 [MIT License](./LICENSE)를 따릅니다.
 
-**"Marble Roulette"™** and **"마블 룰렛"™** are trademarks of lazygyu
-(trademark applications pending in the Republic of Korea).
+이 게임은 lazygyu 의 [Marble Roulette](https://github.com/lazygyu/roulette) 을 포크해
+만들었습니다. 원저작권 표시는 `LICENSE` 에 그대로 유지되어 있습니다.
 
-The MIT License applies to the **source code only**. It does **not** grant any
-right to use these names, or any confusingly similar name, as the name or
-branding of your own project, product, or service.
-
-You may freely fork, modify, and redistribute this code, including for
-commercial purposes, but please publish it under a different name. Nominative
-use — factually referring to this project (e.g. "based on Marble Roulette by
-lazygyu") — is fine.
-
-**"마블 룰렛"™ / "Marble Roulette"™** 은 lazygyu의 상표이며 현재 대한민국
-특허청에 상표 출원 중입니다. 소스 코드는 MIT 라이선스를 따르지만 위 명칭 및
-이에 혼동을 줄 수 있는 유사 명칭은 라이선스 대상이 아닙니다. 포크·수정·재배포는
-자유롭게 하시되 다른 이름을 사용해 주세요.
+> **"Marble Roulette"™** 과 **"마블 룰렛"™** 은 lazygyu 의 상표이며 MIT 라이선스의
+> 대상이 아닙니다. 이 포크는 상표권자의 요청에 따라 **"강냉이 레이스"** 라는 다른
+> 이름을 쓰며, 원저작자 표시는 사실 관계를 밝히는 용도(nominative use)로만 남겨
+> 두었습니다. 게임 이름·브랜딩·도메인 어디에도 원래 명칭이나 이에 혼동을 줄 수 있는
+> 유사 명칭을 쓰지 않습니다.
