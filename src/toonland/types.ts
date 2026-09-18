@@ -64,7 +64,9 @@ export type FieldSlot = {
 
 export type RoundOutcome = {
   roundId: string;
-  /** 1등으로 골인한 구슬의 상품. 꽝이면 null */
+  /** 1등으로 골인한 구슬의 번호 */
+  pickedNumber: number;
+  /** 그 번호에 걸려 있던 상품. 꽝이면 null */
   prize: Prize | null;
   /** 실제 지급된 강냉이 (꽝 기본 혜택 포함) */
   cornDelta: number;

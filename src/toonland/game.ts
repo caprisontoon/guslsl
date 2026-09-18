@@ -2,7 +2,7 @@ import options from '../options';
 import type { Roulette } from '../roulette';
 import { type GameApi, InsufficientCornError, type Settled } from './api';
 import { mapLabel } from './mapLabels';
-import { availablePrizes, buildField, effectiveOdds, totalPrizeProbability } from './prizeTable';
+import { apportion, availablePrizes, effectiveOdds, totalPrizeProbability } from './prizeTable';
 import type { Donator, GameConfig, HistoryEntry, Prize } from './types';
 
 const KIND_LABELS: Record<Prize['kind'], string> = {
@@ -24,8 +24,6 @@ function num(v: number): string {
 export class RaceGame {
   private config!: GameConfig;
   private donator!: Donator;
-  /** 이번 판에서 구슬 이름 -> 상품. 꽝이면 null */
-  private labelToPrize = new Map<string, Prize | null>();
   private roundId: string | null = null;
   private running = false;
 
@@ -47,7 +45,7 @@ export class RaceGame {
     this.roulette.setAutoRecording(false);
     this.roulette.setTheme('dark');
     this.roulette.setMap(this.config.mapIndex);
-    this.previewField();
+    this.renderChips();
   }
 
   private bindEvents(): void {
@@ -63,7 +61,7 @@ export class RaceGame {
       const index = Number((e.target as HTMLSelectElement).value);
       this.config.mapIndex = index;
       this.roulette.setMap(index);
-      this.previewField();
+      this.renderChips();
     });
 
     el<HTMLInputElement>('chkSkill').addEventListener('change', (e) => {
@@ -139,13 +137,13 @@ export class RaceGame {
         : `꽝 ${loseChance.toFixed(2)}%`;
   }
 
-  /** 이번 판에 올라갈 구슬 구성을 미리 만들어 화면 칩에 반영한다 */
-  private previewField(): { label: string; prize: Prize | null }[] {
-    const field = buildField(this.config);
-    const winners = field.filter((slot) => slot.prize).length;
-    el('fieldChip').textContent = `구슬 ${num(field.length)}개`;
-    el('winChip').textContent = `당첨 확률 ${((winners / Math.max(1, field.length)) * 100).toFixed(2)}%`;
-    return field;
+  /** 공개된 확률 테이블만으로 구슬 수와 당첨 확률 칩을 채운다 */
+  private renderChips(): void {
+    const rows = apportion(this.config);
+    const total = rows.reduce((sum, row) => sum + row.count, 0);
+    const winners = rows.reduce((sum, row) => sum + (row.prize ? row.count : 0), 0);
+    el('fieldChip').textContent = `구슬 ${num(total)}개`;
+    el('winChip').textContent = `당첨 확률 ${((winners / Math.max(1, total)) * 100).toFixed(2)}%`;
   }
 
   private async play(): Promise<void> {
@@ -170,13 +168,15 @@ export class RaceGame {
     this.renderHeader();
     this.renderPrizes();
 
-    const field = this.previewField();
-    this.labelToPrize = new Map(field.map((slot) => [slot.label, slot.prize]));
+    this.renderChips();
 
     el('stageIdle').hidden = true;
     this.setPlayButton(true);
 
-    this.roulette.setMarbles(field.map((slot) => slot.label));
+    // 구슬에는 번호만 적는다. 어떤 번호가 무슨 상품인지는 서버만 알고,
+    // 결과는 골인한 번호를 서버에 물어봐서 받는다
+    const numbers = Array.from({ length: started.fieldSize }, (_, i) => String(i + 1));
+    this.roulette.setMarbles(numbers);
     this.roulette.setWinnerRange(0, 0);
     this.roulette.start();
   }
@@ -186,11 +186,15 @@ export class RaceGame {
     this.running = false;
     this.setPlayButton(false);
 
-    const prize = winnerLabel ? (this.labelToPrize.get(winnerLabel) ?? null) : null;
+    const pickedNumber = Number(winnerLabel);
+    if (!Number.isInteger(pickedNumber)) {
+      this.toast('골인한 구슬 번호를 읽지 못했습니다.');
+      return;
+    }
 
     let settled: Settled;
     try {
-      settled = await this.api.settleRound(this.roundId, prize?.id ?? null);
+      settled = await this.api.settleRound(this.roundId, pickedNumber);
     } catch (e) {
       this.toast(e instanceof Error ? e.message : '결과를 저장하지 못했습니다.');
       return;
@@ -209,7 +213,8 @@ export class RaceGame {
     const won = !!outcome.prize;
     el('resultEmoji').textContent = won ? '🎉' : '😢';
     el('resultTitle').textContent = won ? '당첨을 축하드려요!' : '아쉽네요, 꽝이에요';
-    el('resultPrize').textContent = outcome.prize ? outcome.prize.name : '';
+    el('resultNumber').textContent = `${num(outcome.pickedNumber)}번 구슬 1등`;
+    el('resultPrize').textContent = outcome.prize ? outcome.prize.name : this.config.loseLabel;
 
     if (won && outcome.prize) {
       const p = outcome.prize;

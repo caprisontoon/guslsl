@@ -740,3 +740,20 @@ h3 {
     }
   }
 }
+
+// 결과 모달에서 1등 번호를 먼저 보여주고, 그 아래에 상품을 공개한다
+.tl-result__number {
+  margin: 10px 0 0;
+  display: inline-block;
+  padding: 4px 14px;
+  border-radius: 999px;
+  background: var(--tl-surface-2);
+  border: 1px solid var(--tl-line);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--tl-ink-2);
+
+  &:empty {
+    display: none;
+  }
+}

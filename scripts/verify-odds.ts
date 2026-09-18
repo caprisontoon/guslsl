@@ -137,12 +137,15 @@ async function main() {
 
   const startedAt = Date.now();
   for (let r = 0; r < rounds; r++) {
-    // 엔진(setMarbles)과 같은 방식으로 라벨을 출발 칸에 배정한다
+    // 1) 서버: 상품을 번호에 배정한다 (LocalGameApi.startRound 과 같은 방식)
+    const prizeByNumber = shuffle(field.map((slot) => slot.prize));
+
+    // 2) 클라이언트/엔진: 번호를 출발 칸에 배정한다 (setMarbles 과 같은 방식)
     const slots = shuffle([...Array(n).keys()]);
-    const labelOfSlot = new Array<string>(n);
-    field.forEach((slot, i) => {
-      labelOfSlot[slots[i]] = slot.label;
-    });
+    const numberOfSlot = new Array<number>(n);
+    for (let i = 0; i < n; i++) {
+      numberOfSlot[slots[i]] = i + 1;
+    }
 
     const winnerSlot = await raceOnce(config.mapIndex, n);
     if (winnerSlot === null) {
@@ -150,7 +153,8 @@ async function main() {
       continue;
     }
     winsBySlot[winnerSlot]++;
-    const label = labelOfSlot[winnerSlot];
+    const picked = prizeByNumber[numberOfSlot[winnerSlot] - 1];
+    const label = picked ? picked.name : config.loseLabel;
     winsByLabel.set(label, (winsByLabel.get(label) ?? 0) + 1);
 
     if ((r + 1) % 25 === 0) {
