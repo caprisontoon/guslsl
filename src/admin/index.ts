@@ -1,5 +1,6 @@
 import { stages } from '../data/maps';
-import { type GameApi, LocalGameApi } from '../toonland/api';
+import type { GameApi } from '../toonland/api';
+import { createGameApi } from '../toonland/apiFactory';
 import { mapLabel } from '../toonland/mapLabels';
 import { effectiveOdds, expectedCornPerRound, totalPrizeProbability, validateConfig } from '../toonland/prizeTable';
 import type { ConfigRevision, GameConfig, Prize, PrizeKind } from '../toonland/types';
@@ -433,7 +434,13 @@ class AdminApp {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  new AdminApp(new LocalGameApi()).init().catch((e) => {
+  const { api, mode } = createGameApi();
+  if (mode === 'demo') {
+    const banner = el('demoBanner');
+    banner.hidden = false;
+    banner.textContent = '시연 모드입니다. 설정이 이 브라우저에만 저장되고 서버에 반영되지 않습니다.';
+  }
+  new AdminApp(api).init().catch((e) => {
     console.error('[관리자] 초기화 실패', e);
   });
 });

@@ -1,0 +1,428 @@
+openapi: 3.0.3
+info:
+  title: 투네랜드 강냉이 레이스 API
+  version: '1.0'
+  description: |
+    프론트(`src/toonland/httpApi.ts`)가 기대하는 계약입니다. 경로 프리픽스는 HTML 메타
+    태그로 바꿀 수 있으니, 투네이션 API 규칙에 맞춰 프리픽스만 조정하면 됩니다.
+
+    핵심 규칙은 세 가지입니다. 자세한 근거는 `server/SERVER_SPEC.md` 를 보세요.
+
+    1. `POST /rounds` 응답에 번호 -> 상품 매핑을 담지 않습니다. 내려줄 것은 `fieldSize` 뿐입니다.
+    2. `POST /rounds/{roundId}/settle` 은 `1 <= pickedNumber <= fieldSize` 를 검증합니다.
+    3. 같은 `roundId` 로 두 번 정산하면 처음 결과를 그대로 돌려줍니다 (멱등).
+
+servers:
+  - url: /api/toonland/race
+    description: 도네이터용
+  - url: /api/admin/toonland/race
+    description: 관리자용
+
+tags:
+  - name: donator
+    description: 게임 화면이 호출
+  - name: admin
+    description: 관리자 화면이 호출. 운영자 권한 필요
+
+paths:
+  /config:
+    get:
+      tags: [donator]
+      summary: 현재 적용 중인 게임 설정
+      description: |
+        게임 화면이 상품 목록과 확률을 보여주는 데 씁니다. 공개 정보만 담습니다.
+        당첨 판정의 근거로 쓰지 마세요. 판정은 서버가 합니다.
+      responses:
+        '200':
+          description: 적용 중인 설정
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GameConfig' }
+    put:
+      tags: [admin]
+      summary: 게임 설정 저장 (즉시 또는 예약)
+      description: |
+        `revision.scheduledFor` 가 null 이면 즉시 적용하고, 값이 있으면 예약 테이블에 넣습니다.
+        어느 쪽이든 변경 이력에는 항상 한 줄 남깁니다.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [config, revision]
+              properties:
+                config: { $ref: '#/components/schemas/GameConfig' }
+                revision: { $ref: '#/components/schemas/ConfigRevision' }
+      responses:
+        '200':
+          description: 저장된 설정 (updatedAt 이 갱신된 상태)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GameConfig' }
+        '400':
+          description: 확률 합계 초과, 상품명 중복 등 검증 실패
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /config/pending:
+    get:
+      tags: [admin]
+      summary: 예약 대기 중인 설정
+      responses:
+        '200':
+          description: 예약이 있으면 설정과 반영 시각, 없으면 null
+          content:
+            application/json:
+              schema:
+                nullable: true
+                type: object
+                required: [config, applyAt]
+                properties:
+                  config: { $ref: '#/components/schemas/GameConfig' }
+                  applyAt: { type: string, format: date-time }
+
+  /me:
+    get:
+      tags: [donator]
+      summary: 로그인한 도네이터 정보
+      responses:
+        '200':
+          description: 닉네임, 강냉이, 캐시
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Donator' }
+        '401':
+          description: 로그인이 필요함
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /rounds:
+    post:
+      tags: [donator]
+      summary: 라운드 열기 (참가비 차감)
+      description: |
+        확률대로 상품 목록을 만들어 1..fieldSize 번호에 무작위 배정하고, 그 매핑을
+        **서버에만** 저장합니다. 그다음 참가비를 차감합니다.
+
+        매핑 생성이 참가비 차감보다 먼저여야 합니다. 구슬 수가 2개 미만이 되는 잘못된
+        설정이면 차감 전에 실패해야, 정산이 오지 않는데 강냉이만 빠지는 일이 없습니다.
+      responses:
+        '201':
+          description: 열린 라운드
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StartedRound' }
+        '402':
+          description: 강냉이 부족
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error:
+                  code: INSUFFICIENT_CORN
+                  message: 강냉이가 부족합니다.
+                  need: 1000
+                  have: 320
+        '409':
+          description: 게임 설정이 올바르지 않아 라운드를 열 수 없음
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /rounds/{roundId}/settle:
+    post:
+      tags: [donator]
+      summary: 1등 번호를 받아 결과 확정 및 지급
+      description: |
+        번호를 상품으로 바꾸는 것은 서버만 할 수 있습니다. 클라이언트가 어떤 번호를
+        넘기든 매핑이 숨겨져 있고 매 판 새로 섞이므로 기대값은 같습니다.
+
+        멱등해야 합니다. 이미 정산된 라운드에 다시 들어오면 새로 뽑지 않고 처음 결과를
+        그대로 돌려주며, 상품을 두 번 주지 않습니다.
+      parameters:
+        - name: roundId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pickedNumber]
+              properties:
+                pickedNumber:
+                  type: integer
+                  minimum: 1
+                  description: 1등으로 골인한 구슬 번호 (1-based)
+      responses:
+        '200':
+          description: 확정된 결과와 갱신된 잔액
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Settled' }
+        '400':
+          description: 번호가 1..fieldSize 범위를 벗어남
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: { code: NUMBER_OUT_OF_RANGE, message: '구슬 번호가 범위를 벗어났습니다.' }
+        '404':
+          description: 알 수 없는 라운드거나 다른 도네이터의 라운드
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /history:
+    get:
+      tags: [donator]
+      summary: 게임참여내역
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+      responses:
+        '200':
+          description: 최신순 내역
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/HistoryEntry' }
+
+  /revisions:
+    get:
+      tags: [admin]
+      summary: 확률 변경 이력
+      responses:
+        '200':
+          description: 최신순 이력
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ConfigRevision' }
+
+  /stats/daily:
+    get:
+      tags: [admin]
+      summary: 일자별 도전 통계
+      responses:
+        '200':
+          description: 날짜 내림차순
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/DailyStat' }
+
+  /stats/prizes:
+    get:
+      tags: [admin]
+      summary: 상품별 당첨 통계
+      responses:
+        '200':
+          description: 당첨 횟수 내림차순
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PrizeStat' }
+
+components:
+  schemas:
+    PrizeKind:
+      type: string
+      enum: [corn, inventory, cash]
+      description: 강냉이 / 인벤토리 / 캐시
+
+    Prize:
+      type: object
+      required: [id, name, kind, payout, cornValue, probability, winnerLimit, awarded, visible]
+      properties:
+        id: { type: string }
+        name:
+          type: string
+          description: 상품 목록과 결과 화면에 쓰인다. 유일해야 하고 / 와 * 는 쓸 수 없다
+        kind: { $ref: '#/components/schemas/PrizeKind' }
+        payout:
+          type: integer
+          description: corn=강냉이 수량, cash=캐시 금액, inventory=인벤토리 아이템 idx
+        cornValue:
+          type: integer
+          description: 강냉이 환산값 (1캐시 = 25강냉이). 통계·기대수지 계산용
+        probability:
+          type: number
+          description: 당첨 확률 (%)
+        winnerLimit:
+          type: integer
+          description: 당첨 인원 한도. 0이면 무제한
+        awarded:
+          type: integer
+          description: 지금까지 지급된 수량
+        visible: { type: boolean }
+
+    GameConfig:
+      type: object
+      required: [entryFee, fieldSize, mapIndex, loseLabel, consolationCorn, prizes, updatedAt]
+      properties:
+        entryFee:
+          type: integer
+          description: 1회 플레이에 소모되는 강냉이
+        fieldSize:
+          type: integer
+          minimum: 2
+          description: 한 판에 굴릴 구슬 수. 확률 해상도를 정한다 (100이면 1% 단위)
+        mapIndex: { type: integer }
+        loseLabel: { type: string, example: 꽝 }
+        consolationCorn:
+          type: integer
+          description: 꽝이어도 지급하는 기본 혜택 강냉이
+        prizes:
+          type: array
+          items: { $ref: '#/components/schemas/Prize' }
+        updatedAt: { type: string, format: date-time }
+
+    ConfigRevision:
+      type: object
+      required: [at, scheduledFor, entryFee, consolationCorn, fieldSize, odds, memo]
+      properties:
+        at: { type: string, format: date-time }
+        scheduledFor:
+          type: string
+          format: date-time
+          nullable: true
+          description: 즉시 적용이면 null
+        entryFee: { type: integer }
+        consolationCorn: { type: integer }
+        fieldSize: { type: integer }
+        odds:
+          type: array
+          description: 저장 시점의 실제 확률 스냅샷
+          items:
+            type: object
+            required: [label, probability]
+            properties:
+              label: { type: string }
+              probability: { type: number }
+        memo: { type: string }
+
+    Donator:
+      type: object
+      required: [idx, platform, nickname, account, corn, cash]
+      properties:
+        idx: { type: integer }
+        platform: { type: string, example: Twitch }
+        nickname: { type: string }
+        account: { type: string }
+        corn: { type: integer }
+        cash: { type: integer }
+
+    StartedRound:
+      type: object
+      required: [roundId, fieldSize, config, donator]
+      properties:
+        roundId:
+          type: string
+          description: 1회용 토큰. 정산 후에는 재사용할 수 없다
+        fieldSize:
+          type: integer
+          description: 구슬 수. 클라이언트는 1..fieldSize 번호 구슬을 굴린다
+        config: { $ref: '#/components/schemas/GameConfig' }
+        donator:
+          allOf: [{ $ref: '#/components/schemas/Donator' }]
+          description: 참가비가 차감된 뒤의 잔액
+
+    RoundOutcome:
+      type: object
+      required: [roundId, pickedNumber, prize, cornDelta, entryFee]
+      properties:
+        roundId: { type: string }
+        pickedNumber: { type: integer }
+        prize:
+          allOf: [{ $ref: '#/components/schemas/Prize' }]
+          nullable: true
+          description: 꽝이면 null
+        cornDelta:
+          type: integer
+          description: 실제 지급된 강냉이 (꽝 기본 혜택 포함)
+        entryFee: { type: integer }
+
+    Settled:
+      type: object
+      required: [outcome, donator]
+      properties:
+        outcome: { $ref: '#/components/schemas/RoundOutcome' }
+        donator:
+          allOf: [{ $ref: '#/components/schemas/Donator' }]
+          description: 지급까지 반영된 잔액
+
+    HistoryEntry:
+      type: object
+      required: [roundId, at, game, spent, reward, result, kind]
+      properties:
+        roundId: { type: string }
+        at: { type: string, format: date-time }
+        game: { type: string, example: 강냉이 레이스 }
+        spent:
+          type: integer
+          description: 소모한 강냉이 (음수)
+        reward:
+          type: string
+          description: 당첨 내역 표시용 문자열
+        result:
+          type: string
+          enum: [당첨, 꽝]
+        kind:
+          type: string
+          enum: [corn, inventory, cash, '-']
+
+    DailyStat:
+      type: object
+      required: [date, rounds, wins, losses, cornSpent, cornPaid]
+      properties:
+        date: { type: string, format: date }
+        rounds: { type: integer }
+        wins: { type: integer }
+        losses: { type: integer }
+        cornSpent: { type: integer }
+        cornPaid: { type: integer }
+
+    PrizeStat:
+      type: object
+      required: [label, wins]
+      properties:
+        label: { type: string }
+        wins: { type: integer }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - UNAUTHORIZED
+                - INSUFFICIENT_CORN
+                - ROUND_NOT_FOUND
+                - NUMBER_OUT_OF_RANGE
+                - CONFIG_INVALID
+              description: |
+                프론트가 코드로 분기합니다. INSUFFICIENT_CORN 이면 충전 안내 팝업을 띄우고,
+                그 외에는 토스트로 message 를 보여줍니다.
+            message: { type: string }
+            need:
+              type: integer
+              description: INSUFFICIENT_CORN 일 때 필요한 강냉이
+            have:
+              type: integer
+              description: INSUFFICIENT_CORN 일 때 보유 강냉이

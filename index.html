@@ -9,6 +9,14 @@
   <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="manifest" href="assets/manifest.json">
+  <!-- 실서버에 붙일 때 아래 주석을 풀고 경로를 맞추세요. 태그가 없으면 시연 모드입니다.
+       자세한 내용은 server/SERVER_SPEC.md -->
+  <!--
+  <meta name="toonland-api-base" content="/api/toonland/race">
+  <meta name="toonland-admin-api-base" content="/api/admin/toonland/race">
+  <meta name="toonland-api-credentials" content="include">
+  -->
+
   <meta name="theme-color" content="#2b6ef2">
   <link rel='stylesheet' href='assets/style.scss'/>
 </head>
@@ -34,6 +42,10 @@
     </div>
   </div>
 </header>
+
+<p class="tl-demo" id="demoBadge" hidden>
+  시연 모드입니다. 강냉이와 상품이 이 브라우저에만 저장되고 서버에 반영되지 않습니다.
+</p>
 
 <main class="tl-main">
   <section class="tl-stage">
@@ -119,7 +131,7 @@
   <div class="tl-modal__box" role="dialog" aria-modal="true">
     <div class="tl-result">
       <p class="tl-result__emoji">🌽</p>
-      <h3 class="tl-result__title">강냉이가 부족해요</h3>
+      <h3 class="tl-result__title" id="chargeTitle">강냉이 충전</h3>
       <p class="tl-result__sub" id="chargeSub"></p>
     </div>
     <div class="tl-modal__actions">

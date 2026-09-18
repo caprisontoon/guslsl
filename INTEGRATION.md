@@ -1,23 +1,44 @@
 # 투네이션 백엔드 연동 가이드
 
 강냉이 레이스는 백엔드에 대한 의존을 `GameApi` 인터페이스 하나로 모아 두었습니다.
-이 인터페이스만 구현해서 갈아끼우면 게임·관리자 화면 코드는 그대로 둔 채 투네이션
-서버에 붙습니다.
+프론트에는 이미 HTTP 구현(`ToonationGameApi`)이 들어 있으니, **서버만 계약대로
+만들면 코드 수정 없이 붙습니다.**
 
-## 1. 갈아끼우는 지점
+| 파일 | 내용 |
+|---|---|
+| [`server/openapi.yaml`](./server/openapi.yaml) | API 계약. 경로·요청·응답·오류 코드 |
+| [`server/SERVER_SPEC.md`](./server/SERVER_SPEC.md) | 엔드포인트별 알고리즘, 트랜잭션 경계, 점검 목록 |
+| [`server/schema.sql`](./server/schema.sql) | 게임 전용 테이블 DDL |
+| `src/toonland/httpApi.ts` | 프론트 HTTP 클라이언트 (이미 구현됨) |
+| `src/toonland/api.ts` | `GameApi` 인터페이스 정의 |
 
-기본 구현은 브라우저 저장소로 도는 `LocalGameApi` 입니다. 서버 없이 전체 흐름을
-시연할 수 있게 넣어둔 것이고, 실제 서비스에서는 쓰지 않습니다.
+## 1. 붙이는 방법
 
-```ts
-// src/index.ts
-const api = new LocalGameApi();          // -> new ToonationGameApi()
+HTML 에 메타 태그만 넣으면 됩니다. 빌드를 다시 하지 않아도 되고, 배포 환경마다
+다른 값을 쓸 수 있습니다.
 
-// src/admin/index.ts
-new AdminApp(new LocalGameApi()).init(); // -> new ToonationGameApi()
+```html
+<meta name="toonland-api-base" content="/api/toonland/race">
+<meta name="toonland-admin-api-base" content="/api/admin/toonland/race">
+<meta name="toonland-api-credentials" content="include">
+<meta name="toonland-charge-url" content="/charge">
 ```
 
-`GameApi` 정의는 `src/toonland/api.ts` 에 있습니다.
+`index.html` 과 `admin.html` 의 `<head>` 에 주석으로 넣어뒀으니 풀어서 경로만
+맞추면 됩니다.
+
+태그가 없으면 브라우저 저장소로 도는 **시연 모드**이고, 화면 상단에 그 사실을 알리는
+띠가 뜹니다. 실서버로 착각한 채 테스트하는 일을 막기 위한 장치입니다.
+
+Bearer 토큰을 쓴다면 `src/toonland/apiFactory.ts` 에서 `ToonationGameApi` 에
+`headers` 콜백을 넘기세요.
+
+```ts
+new ToonationGameApi({
+  baseUrl,
+  headers: () => ({ Authorization: `Bearer ${getToken()}` }),
+});
+```
 
 ## 2. 서버가 해줘야 하는 일
 
@@ -127,6 +148,9 @@ type Prize = {
 
 두 화면 모두 정적 파일이라 투네이션 프론트에 iframe 으로 얹거나, 마크업을 기존
 투네랜드 레이아웃에 옮겨 붙일 수 있습니다.
+
+강냉이가 부족할 때는 `toonland-charge-url` 로 지정한 캐시 충전 페이지를 새 창으로
+엽니다. 지정하지 않으면 안내 토스트만 띄웁니다.
 
 - 게임 화면 `index.html` — 헤더(도네이터 정보·강냉이 잔액)는 투네랜드 공통 헤더로
   교체하면 됩니다. 캔버스는 `[data-race-canvas]` 안에 붙고, 결과 모달은 1등 번호를

@@ -757,3 +757,20 @@ h3 {
     display: none;
   }
 }
+
+// 시연 모드 알림. 서버에 붙지 않은 상태를 눈에 보이게 해서
+// 실서버로 착각한 채 테스트하는 일을 막는다
+.tl-demo {
+  margin: 0;
+  padding: 10px 20px;
+  background: #fff6dc;
+  border-bottom: 1px solid #ffdf94;
+  color: #8a6200;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+
+  &[hidden] {
+    display: none;
+  }
+}
