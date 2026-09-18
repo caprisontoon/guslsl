@@ -7,6 +7,9 @@
 - 게임 화면: `index.html`
 - 관리자 화면: `admin.html`
 - 백엔드 연동 방법: [INTEGRATION.md](./INTEGRATION.md)
+- API 계약: [server/openapi.yaml](./server/openapi.yaml)
+- 서버 구현 명세: [server/SERVER_SPEC.md](./server/SERVER_SPEC.md)
+- 테이블 DDL: [server/schema.sql](./server/schema.sql)
 
 ## 게임 방식
 

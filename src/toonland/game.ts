@@ -29,7 +29,9 @@ export class RaceGame {
 
   constructor(
     private readonly roulette: Roulette,
-    private readonly api: GameApi
+    private readonly api: GameApi,
+    /** 캐시 충전 페이지. 서버 모드에서 강냉이가 부족할 때 여기로 보낸다 */
+    private readonly chargeUrl?: string
   ) {}
 
   async init(): Promise<void> {
@@ -41,6 +43,9 @@ export class RaceGame {
     this.renderPrizes();
     await this.renderHistory();
     this.bindEvents();
+
+    const canTopUpHere = 'topUp' in (this.api as object);
+    el('btnCharge').textContent = canTopUpHere ? '강냉이 받기' : '캐시 충전하러 가기';
 
     this.roulette.setAutoRecording(false);
     this.roulette.setTheme('dark');
@@ -54,7 +59,7 @@ export class RaceGame {
       this.closeModal('resultModal');
       this.play();
     });
-    el('btnTopUp').addEventListener('click', () => this.openModal('chargeModal', this.chargeMessage()));
+    el('btnTopUp').addEventListener('click', () => this.openCharge('topup'));
     el('btnCharge').addEventListener('click', () => this.topUp());
 
     el<HTMLSelectElement>('sltMap').addEventListener('change', (e) => {
@@ -154,7 +159,7 @@ export class RaceGame {
       started = await this.api.startRound();
     } catch (e) {
       if (e instanceof InsufficientCornError) {
-        this.openModal('chargeModal', this.chargeMessage());
+        this.openCharge('insufficient');
         return;
       }
       this.toast(e instanceof Error ? e.message : '게임을 시작할 수 없습니다.');
@@ -283,25 +288,39 @@ export class RaceGame {
     el<HTMLInputElement>('chkSkill').disabled = running;
   }
 
-  private chargeMessage(): string {
-    return `1회 참가비는 ${num(this.config.entryFee)} 강냉이예요. 현재 ${num(this.donator.corn)} 강냉이를 갖고 있어요.`;
+  /**
+   * 충전 모달은 두 곳에서 열린다. 헤더의 충전하기 버튼(그냥 충전하려는 경우)과
+   * 참가비가 모자라 라운드를 못 연 경우. 잔액이 넉넉한데 '부족해요'가 뜨면 이상하므로
+   * 제목과 문구를 나눠 쓴다
+   */
+  private openCharge(reason: 'topup' | 'insufficient'): void {
+    const short = reason === 'insufficient';
+    el('chargeTitle').textContent = short ? '강냉이가 부족해요' : '강냉이 충전';
+    el('chargeSub').textContent = short
+      ? `1회 참가비는 ${num(this.config.entryFee)} 강냉이인데 ${num(this.donator.corn)} 강냉이를 갖고 있어요.`
+      : `지금 ${num(this.donator.corn)} 강냉이를 갖고 있어요. 1회 참가비는 ${num(this.config.entryFee)} 강냉이예요.`;
+    el('chargeModal').hidden = false;
   }
 
+  /** 시연 모드에서는 바로 채워주고, 실서버에서는 캐시 충전 페이지로 보낸다 */
   private async topUp(): Promise<void> {
     const api = this.api as GameApi & { topUp?: (amount: number) => Promise<Donator> };
-    if (!api.topUp) {
-      this.toast('충전은 투네이션 충전 페이지에서 진행해 주세요.');
+
+    if (api.topUp) {
+      this.donator = await api.topUp(this.config.entryFee * 10);
+      this.renderHeader();
+      this.closeModal('chargeModal');
+      this.toast('강냉이를 충전했어요.');
       return;
     }
-    this.donator = await api.topUp(this.config.entryFee * 10);
-    this.renderHeader();
-    this.closeModal('chargeModal');
-    this.toast('강냉이를 충전했어요.');
-  }
 
-  private openModal(id: string, message?: string): void {
-    if (id === 'chargeModal' && message) el('chargeSub').textContent = message;
-    el(id).hidden = false;
+    if (this.chargeUrl) {
+      window.open(this.chargeUrl, '_blank', 'noopener');
+      this.closeModal('chargeModal');
+      return;
+    }
+
+    this.toast('충전은 투네이션 충전 페이지에서 진행해 주세요.');
   }
 
   private closeModal(id: string): void {
