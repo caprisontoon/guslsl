@@ -73,6 +73,20 @@ function pct(v: number): string {
   return `${(v * 100).toFixed(2)}%`;
 }
 
+/** 카이제곱 분포 상위 0.1% 기준값 (자유도별). 표를 쓰는 편이 근사식보다 읽기 쉽다 */
+const CHI_SQ_P001: Record<number, number> = {
+  1: 10.83,
+  2: 13.82,
+  3: 16.27,
+  4: 18.47,
+  5: 20.52,
+  6: 22.46,
+  7: 24.32,
+  8: 26.12,
+  9: 27.88,
+  10: 29.59,
+};
+
 /** 확률 -> 구슬 개수 환산이 정확한지 (합이 전체와 같은지, 비율이 설정에 가까운지) */
 function checkApportion(): boolean {
   const cases: { name: string; config: GameConfig }[] = [
@@ -165,18 +179,33 @@ async function main() {
   const played = rounds - unfinished;
   const expected = new Map(apportion(config).map(({ prize, count }) => [prize ? prize.name : config.loseLabel, count / n]));
 
-  console.log('| 항목 | 설정 확률 | 실측 | 당첨 수 | 표준편차 대비 |');
-  console.log('|---|---:|---:|---:|---:|');
+  console.log('| 항목 | 설정 확률 | 실측 | 당첨 수 | 기대 수 | 표준편차 대비 |');
+  console.log('|---|---:|---:|---:|---:|---:|');
   let worstSigma = 0;
+  let chiSq = 0;
+  let cells = 0;
   for (const [label, p] of expected) {
     const wins = winsByLabel.get(label) ?? 0;
     const observed = played > 0 ? wins / played : 0;
-    // 이항분포 표준편차로 정규화한 편차. |z| 가 3 을 넘으면 설정과 다르다고 의심할 만하다
+    const expectedWins = p * played;
+    // 항목별 편차는 눈으로 보기 위한 것이다. 항목이 여러 개면 그중 하나가 3σ를
+    // 넘는 일은 우연으로도 꽤 생기므로, 판정은 아래 카이제곱으로 한다
     const sd = Math.sqrt((p * (1 - p)) / Math.max(1, played));
     const z = sd > 0 ? (observed - p) / sd : 0;
     worstSigma = Math.max(worstSigma, Math.abs(z));
-    console.log(`| ${label} | ${pct(p)} | ${pct(observed)} | ${wins} | ${z >= 0 ? '+' : ''}${z.toFixed(2)}σ |`);
+    if (expectedWins > 0) {
+      chiSq += (wins - expectedWins) ** 2 / expectedWins;
+      cells++;
+    }
+    console.log(
+      `| ${label} | ${pct(p)} | ${pct(observed)} | ${wins} | ${expectedWins.toFixed(1)} | ${z >= 0 ? '+' : ''}${z.toFixed(2)}σ |`
+    );
   }
+
+  // 적합도 검정. 항목 전체를 한 번에 보므로 다중비교로 인한 헛경보가 없다
+  const df = Math.max(1, cells - 1);
+  const p001 = CHI_SQ_P001[df] ?? Number.POSITIVE_INFINITY;
+  const chiOk = chiSq <= p001;
 
   // 칸별 승률은 균등하지 않아도 된다. 위 표가 맞으면 배정 셔플이 그 편향을 지워준다는 뜻이다
   const slotMax = Math.max(...winsBySlot);
@@ -184,9 +213,12 @@ async function main() {
   console.log(`\n출발 칸별 승리 수: 최소 ${slotMin}, 최대 ${slotMax} (칸이 유리해도 상품 확률에는 영향이 없다)`);
   console.log(`완주 실패: ${unfinished}판`);
   console.log(`\n환산 검증: ${apportionOk ? '통과' : '실패'}`);
-  console.log(`실측 최대 편차: ${worstSigma.toFixed(2)}σ ${worstSigma < 3.5 ? '(정상 범위)' : '(확인 필요)'}`);
+  console.log(`항목별 최대 편차: ${worstSigma.toFixed(2)}σ (참고용)`);
+  console.log(
+    `적합도 검정: 카이제곱 ${chiSq.toFixed(2)} (자유도 ${df}, 유의수준 0.001 기준값 ${p001.toFixed(2)}) -> ${chiOk ? '설정과 일치' : '불일치, 확인 필요'}`
+  );
 
-  if (!apportionOk) process.exitCode = 1;
+  if (!apportionOk || !chiOk) process.exitCode = 1;
 }
 
 main();
