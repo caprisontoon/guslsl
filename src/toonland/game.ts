@@ -1,4 +1,3 @@
-import options from '../options';
 import type { MarbleSpec, Roulette } from '../roulette';
 import { type GameApi, InsufficientCornError, type Settled } from './api';
 import { mapLabel } from './mapLabels';
@@ -80,10 +79,6 @@ export class RaceGame {
       this.config.mapIndex = index;
       this.roulette.setMap(index);
       this.renderChips();
-    });
-
-    el<HTMLInputElement>('chkSkill').addEventListener('change', (e) => {
-      options.useSkills = (e.target as HTMLInputElement).checked;
     });
 
     document.querySelectorAll('[data-close-modal]').forEach((node) => {
@@ -299,7 +294,6 @@ export class RaceGame {
     // 레이스 중 맵을 바꾸면 구슬이 리셋되어 골인 이벤트가 오지 않는다.
     // 참가비는 이미 빠진 뒤라 라운드가 그대로 멈춰버리므로 막는다
     el<HTMLSelectElement>('sltMap').disabled = running;
-    el<HTMLInputElement>('chkSkill').disabled = running;
   }
 
   /**
