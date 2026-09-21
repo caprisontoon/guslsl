@@ -16,8 +16,16 @@ import type { ColorTheme } from './types/ColorTheme';
 import type { MouseEventHandlerName, MouseEventName } from './types/mouseEvents.type';
 import type { UIObject } from './UIObject';
 import { bound } from './utils/bound.decorator';
-import { parseName, shuffle } from './utils/utils';
+import { deriveSeed } from './utils/rng';
 import { VideoRecorder } from './utils/videoRecorder';
+
+/** 출발 칸 하나에 놓을 구슬. 색으로 상품 등급을 구분해 어느 구슬이 값진지 보이게 한다 */
+export type MarbleSpec = {
+  label: string;
+  hue: number;
+  /** 꽝 구슬. 회색으로 죽이고 이름을 그리지 않는다 */
+  muted?: boolean;
+};
 
 /** 입력 범위를 실제 구슬 수에 맞춰 자른다. 범위를 넘기면 뒤쪽이 잘린다 */
 function clipWinnerRange({ start, end }: WinnerRange, marbleCount: number): WinnerRange {
@@ -48,6 +56,14 @@ export class Roulette extends EventTarget {
   private _winnerRange: WinnerRange = { start: 0, end: 0 };
   private _goalDist: number = Infinity;
   private _isRunning: boolean = false;
+  /**
+   * 물리를 진행시킬지. 대기 중에는 멈춰 둔다.
+   *
+   * 맵에는 계속 도는 장치가 있어서, 대기 중에도 스텝을 돌리면 출발 시각까지 흐른
+   * 프레임 수만큼 판이 돌아가 있다. 그러면 같은 시드라도 서버가 예측한 1등과
+   * 다른 구슬이 들어온다. start() 시점의 판 상태를 항상 같게 만들어야 한다
+   */
+  private _stepping: boolean = false;
   /** 진행 중에는 null, 당첨자가 모두 확정되면 당첨자 배열 */
   private _result: Marble[] | null = null;
 
@@ -117,22 +133,21 @@ export class Roulette extends EventTarget {
     }
     this._lastTime = currentTime;
 
-    // _timeScale 은 _updateMarbles 에서 갱신되지만 물리 스텝 크기는 이 프레임 시작값으로 고정된다.
-    // 구슬 정지 판정도 같은 값을 써야 실제 진행된 물리 시간과 맞는다
-    const timeScale = this._timeScale;
-    const interval = (this._updateInterval / 1000) * timeScale;
-
-    while (this._elapsed >= this._updateInterval) {
-      this.physics.step(interval);
+    // 스텝 크기와 정렬을 프레임이 아니라 스텝마다 정한다. 프레임 하나에 스텝이 몇 번
+    // 도는지는 기기 성능에 따라 달라지므로, 프레임 단위로 잡으면 같은 시드라도 결과가
+    // 갈린다. 스텝 단위로 두면 n 번째 스텝의 상태가 프레임 경계와 무관하게 같아진다.
+    // 구슬 정지 판정도 물리 스텝과 같은 timeScale 을 써야 진행된 물리 시간과 맞는다
+    while (this._stepping && this._elapsed >= this._updateInterval) {
+      const timeScale = this._timeScale;
+      this.physics.step((this._updateInterval / 1000) * timeScale);
+      if (this._marbles.length > 1) {
+        this._marbles.sort((a, b) => b.y - a.y);
+      }
       this._updateMarbles(this._updateInterval, timeScale);
       this._particleManager.update(this._updateInterval);
       this._updateEffects(this._updateInterval);
       this._elapsed -= this._updateInterval;
       this._uiObjects.forEach((obj) => obj.update(this._updateInterval));
-    }
-
-    if (this._marbles.length > 1) {
-      this._marbles.sort((a, b) => b.y - a.y);
     }
 
     if (this._stage) {
@@ -208,7 +223,12 @@ export class Roulette extends EventTarget {
     this._isRunning = false;
     this.dispatchEvent(
       new CustomEvent('goal', {
-        detail: { winner: this._result[0].name, winners: this._result.map((m) => m.name) },
+        detail: {
+          winner: this._result[0].name,
+          // 출발 칸 번호. 같은 이름의 구슬이 여럿이라 이름만으로는 특정할 수 없다
+          winnerSlot: this._result[0].id,
+          winners: this._result.map((m) => m.name),
+        },
       })
     );
     setTimeout(() => {
@@ -364,6 +384,11 @@ export class Roulette extends EventTarget {
 
   public start() {
     this._isRunning = true;
+    // 대기 중 쌓인 시간은 버린다. 첫 프레임에 스텝이 몰려도 결과는 같지만,
+    // 출발 직후 화면이 튀어 보인다
+    this._elapsed = 0;
+    this._lastTime = Date.now();
+    this._stepping = true;
     this._winnerRange = clipWinnerRange(options.winnerRange, this._marbles.length);
     this._camera.startFollowingMarbles();
 
@@ -416,46 +441,25 @@ export class Roulette extends EventTarget {
     this._autoRecording = value;
   }
 
-  public setMarbles(names: string[]) {
+  /**
+   * 출발선에 구슬을 놓는다. specs[i] 가 i 번 칸의 구슬이다.
+   *
+   * 칸 배정은 섞지 않는다. 어느 칸에 어떤 상품을 놓을지는 서버가 정해서 내려주기
+   * 때문이다. seed 를 주면 구슬마다 그 시드에서 파생한 난수 수열을 써서, 같은
+   * (시드, 구슬 수, 맵) 이면 언제 어디서 돌려도 같은 구슬이 1등한다.
+   */
+  public setMarbles(specs: MarbleSpec[], seed?: number) {
     this.reset();
-    const arr = names.slice();
 
-    let maxWeight = -Infinity;
-    let minWeight = Infinity;
-
-    const members = arr
-      .map((nameString) => {
-        const result = parseName(nameString);
-        if (!result) return null;
-        const { name, weight, count } = result;
-        if (weight > maxWeight) maxWeight = weight;
-        if (weight < minWeight) minWeight = weight;
-        return { name, weight, count };
-      })
-      .filter((member) => !!member);
-
-    const gap = maxWeight - minWeight;
-
-    let totalCount = 0;
-    members.forEach((member) => {
-      if (member) {
-        member.weight = 0.1 + (gap ? (member.weight - minWeight) / gap : 0);
-        totalCount += member.count;
-      }
-    });
-
-    const orders = shuffle(
-      Array(totalCount)
-        .fill(0)
-        .map((_, i) => i)
-    );
-    members.forEach((member) => {
-      if (member) {
-        for (let j = 0; j < member.count; j++) {
-          const order = orders.pop() || 0;
-          this._marbles.push(new Marble(this.physics, order, totalCount, member.name, member.weight));
-        }
-      }
+    const totalCount = specs.length;
+    specs.forEach((spec, order) => {
+      const marbleSeed = seed === undefined ? undefined : deriveSeed(seed, order);
+      this._marbles.push(
+        new Marble(this.physics, order, totalCount, spec.label, 1, marbleSeed, {
+          hue: spec.hue,
+          muted: spec.muted,
+        })
+      );
     });
 
     // 카메라를 구슬 생성 위치 중앙으로 이동 + 줌인
@@ -480,14 +484,15 @@ export class Roulette extends EventTarget {
     }
   }
 
-  private _clearMap() {
-    this.physics.clear();
-    this._marbles = [];
-  }
-
   public reset() {
-    this.clearMarbles();
-    this._clearMap();
+    this._stepping = false;
+    this._pendingRemovals.forEach((id) => window.clearTimeout(id));
+    this._pendingRemovals = [];
+    this._result = null;
+    this._winners = [];
+    this._marbles = [];
+    // 판마다 빈 월드에서 시작해야 같은 시드가 같은 1등을 낸다
+    this.physics.resetWorld();
     this._loadMap();
     this._goalDist = Infinity;
   }
@@ -517,9 +522,13 @@ export class Roulette extends EventTarget {
     if (index < 0 || index > stages.length - 1) {
       throw new Error('Incorrect map number');
     }
-    const names = this._marbles.map((marble) => marble.name);
+    const specs: MarbleSpec[] = this._marbles.map((marble) => ({
+      label: marble.name,
+      hue: marble.hue,
+      muted: marble.muted,
+    }));
     this._stage = stages[index];
-    this.setMarbles(names);
+    this.setMarbles(specs);
     this._camera.initializePosition();
   }
 }

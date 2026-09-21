@@ -4,8 +4,13 @@ import type { ConfigRevision, Donator, GameConfig, HistoryEntry, Prize, RoundOut
 
 export type StartedRound = {
   roundId: string;
-  /** 굴릴 구슬 수. 구슬에는 1..fieldSize 번호만 적힌다 */
-  fieldSize: number;
+  /** 각 출발 칸에 놓을 구슬 이름. labels[i] 가 i 번 칸의 구슬이다 */
+  labels: string[];
+  /**
+   * 결정적 재생을 위한 시드. 서버가 이 시드로 미리 1등 칸을 알고 있고, 그 칸에
+   * 뽑힌 상품을 올려놓는다. 없으면(시연 모드) 시드 없이 굴리고 관측된 칸으로 정산한다
+   */
+  seed?: number;
   config: GameConfig;
   donator: Donator;
 };
@@ -39,10 +44,13 @@ export interface GameApi {
   /** 참가비를 차감하고 라운드를 연다. 강냉이가 모자라면 예외 */
   startRound(): Promise<StartedRound>;
   /**
-   * 1등으로 골인한 구슬 번호를 넘겨 결과를 확정하고 상품을 지급한다.
-   * 번호 -> 상품 매핑은 서버만 알고 있으므로, 어떤 번호를 넘겨도 확률은 같다.
+   * 라운드를 확정하고 상품을 지급한다.
+   *
+   * observedSlot 은 화면에서 실제로 1등한 칸이다. 실서버는 이 값을 **판정에 쓰지
+   * 않는다.** 시드로 1등 칸을 이미 알고 있으므로, 조작해서 보내도 결과가 바뀌지 않는다.
+   * 재생이 어긋났는지 확인하는 용도로만 받는다. 시연 모드는 시드가 없으므로 이 값을 쓴다.
    */
-  settleRound(roundId: string, pickedNumber: number): Promise<Settled>;
+  settleRound(roundId: string, observedSlot: number): Promise<Settled>;
   listHistory(limit?: number): Promise<HistoryEntry[]>;
   listRevisions(): Promise<ConfigRevision[]>;
   dailyStats(): Promise<DailyStat[]>;
@@ -164,11 +172,11 @@ export const GAME_NAME = '강냉이 레이스';
 /** 브라우저 저장소로 동작하는 기본 구현. 서버 연동 전 단독 실행/시연용 */
 export class LocalGameApi implements GameApi {
   /**
-   * 열려 있는 라운드. prizeByNumber 는 클라이언트에 내려주지 않는다.
-   * 구슬에는 번호만 적혀 있고 어떤 번호가 무슨 상품인지는 여기만 알기 때문에,
-   * 조작해서 다른 번호를 신고해도 기대값이 달라지지 않는다.
+   * 열려 있는 라운드. 시연 모드에는 시드가 없으므로, 화면에서 관측된 1등 칸을 받아
+   * 여기 저장된 배치에서 상품을 찾는다. 실서버는 시드로 1등 칸을 미리 알고 있어
+   * 클라이언트 값을 쓰지 않는다 (server/SERVER_SPEC.md 참고)
    */
-  private openRounds = new Map<string, { fee: number; prizeByNumber: (Prize | null)[] }>();
+  private openRounds = new Map<string, { fee: number; prizeBySlot: (Prize | null)[] }>();
 
   async loadConfig(): Promise<GameConfig> {
     this.promoteScheduled();
@@ -223,12 +231,11 @@ export class LocalGameApi implements GameApi {
       throw new InsufficientCornError(config.entryFee, donator.corn);
     }
 
-    // 확률대로 구성한 상품 목록을 번호에 무작위로 배정한다. 매 판 새로 섞으므로
-    // 특정 번호가 계속 좋은 상품을 물고 있는 일은 없다.
+    // 확률대로 구성한 상품을 출발 칸에 무작위로 배정한다.
     // 참가비 차감보다 먼저 해야 한다. 구슬이 0개인 설정이면 레이스가 끝나지 않아
     // 정산이 영영 안 오는데, 그 전에 강냉이를 빼면 그냥 잃는 셈이 된다
-    const prizeByNumber = shuffle(buildField(config).map((slot) => slot.prize));
-    if (prizeByNumber.length < 2) {
+    const field = shuffle(buildField(config));
+    if (field.length < 2) {
       throw new Error('게임 설정이 올바르지 않습니다. 관리자에게 문의해 주세요.');
     }
 
@@ -236,23 +243,23 @@ export class LocalGameApi implements GameApi {
     this.saveDonator(next);
 
     const roundId = `r${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
-    this.openRounds.set(roundId, { fee: config.entryFee, prizeByNumber });
-    return { roundId, fieldSize: prizeByNumber.length, config, donator: next };
+    this.openRounds.set(roundId, { fee: config.entryFee, prizeBySlot: field.map((slot) => slot.prize) });
+    return { roundId, labels: field.map((slot) => slot.label), config, donator: next };
   }
 
-  async settleRound(roundId: string, pickedNumber: number): Promise<Settled> {
+  async settleRound(roundId: string, observedSlot: number): Promise<Settled> {
     const open = this.openRounds.get(roundId);
     if (!open) throw new Error(`알 수 없는 라운드입니다: ${roundId}`);
     // 라운드 토큰은 1회용이다. 결과가 마음에 들 때까지 다시 신고할 수 없어야 한다
     this.openRounds.delete(roundId);
 
-    if (!Number.isInteger(pickedNumber) || pickedNumber < 1 || pickedNumber > open.prizeByNumber.length) {
-      throw new Error(`구슬 번호가 범위를 벗어났습니다: ${pickedNumber}`);
+    if (!Number.isInteger(observedSlot) || observedSlot < 0 || observedSlot >= open.prizeBySlot.length) {
+      throw new Error(`구슬 칸 번호가 범위를 벗어났습니다: ${observedSlot}`);
     }
 
     const config = await this.loadConfig();
     // 상품 객체는 이 라운드 시작 시점의 사본이므로, 지급 수량을 올릴 대상은 현재 설정에서 다시 찾는다
-    const drawn = open.prizeByNumber[pickedNumber - 1];
+    const drawn = open.prizeBySlot[observedSlot];
     const prize = drawn ? (config.prizes.find((p) => p.id === drawn.id) ?? null) : null;
     let donator = await this.getDonator();
 
@@ -287,7 +294,7 @@ export class LocalGameApi implements GameApi {
     write(KEYS.history, [entry, ...read<HistoryEntry[]>(KEYS.history, [])].slice(0, 500));
 
     return {
-      outcome: { roundId, pickedNumber, prize, cornDelta, entryFee: open.fee },
+      outcome: { roundId, winnerSlot: observedSlot, prize, cornDelta, entryFee: open.fee },
       donator,
     };
   }

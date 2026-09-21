@@ -8,8 +8,10 @@ info:
 
     핵심 규칙은 세 가지입니다. 자세한 근거는 `server/SERVER_SPEC.md` 를 보세요.
 
-    1. `POST /rounds` 응답에 번호 -> 상품 매핑을 담지 않습니다. 내려줄 것은 `fieldSize` 뿐입니다.
-    2. `POST /rounds/{roundId}/settle` 은 `1 <= pickedNumber <= fieldSize` 를 검증합니다.
+    1. 서버가 시드로 1등 칸을 **미리 알고** 라운드를 엽니다. 그래서 구슬에 상품 이름을
+       다 보여줘도 안전합니다.
+    2. `POST /rounds/{roundId}/settle` 은 클라이언트가 보낸 `observedSlot` 을 **판정에
+       쓰지 않습니다.** 재생이 어긋났는지 보는 용도로만 기록합니다.
     3. 같은 `roundId` 로 두 번 정산하면 처음 결과를 그대로 돌려줍니다 (멱등).
 
 servers:
@@ -104,11 +106,14 @@ paths:
       tags: [donator]
       summary: 라운드 열기 (참가비 차감)
       description: |
-        확률대로 상품 목록을 만들어 1..fieldSize 번호에 무작위 배정하고, 그 매핑을
-        **서버에만** 저장합니다. 그다음 참가비를 차감합니다.
+        시드 풀에서 한 줄(seed, winner_slot)을 꺼내고, 확률대로 뽑은 상품을 그
+        winner_slot 칸에 올립니다. 나머지 칸은 설정 분포에 맞춰 채웁니다.
 
-        매핑 생성이 참가비 차감보다 먼저여야 합니다. 구슬 수가 2개 미만이 되는 잘못된
-        설정이면 차감 전에 실패해야, 정산이 오지 않는데 강냉이만 빠지는 일이 없습니다.
+        클라이언트는 이 시드로 레이스를 재생하고, 물리가 결정적이므로 winner_slot 의
+        구슬이 1등합니다. 서버는 답을 이미 알고 있으니 클라이언트에게 묻지 않습니다.
+
+        시드 배정이 참가비 차감보다 먼저여야 합니다. 구슬 수가 2개 미만이거나 시드 풀이
+        비었으면 차감 전에 실패해야, 정산이 오지 않는데 강냉이만 빠지는 일이 없습니다.
       responses:
         '201':
           description: 열린 라운드
@@ -127,7 +132,7 @@ paths:
                   need: 1000
                   have: 320
         '409':
-          description: 게임 설정이 올바르지 않아 라운드를 열 수 없음
+          description: 게임 설정이 올바르지 않거나 시드 풀이 비어 라운드를 열 수 없음
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -135,10 +140,11 @@ paths:
   /rounds/{roundId}/settle:
     post:
       tags: [donator]
-      summary: 1등 번호를 받아 결과 확정 및 지급
+      summary: 결과 확정 및 지급
       description: |
-        번호를 상품으로 바꾸는 것은 서버만 할 수 있습니다. 클라이언트가 어떤 번호를
-        넘기든 매핑이 숨겨져 있고 매 판 새로 섞이므로 기대값은 같습니다.
+        서버는 라운드를 열 때 저장해 둔 winner_slot 으로 판정합니다. 요청 본문의
+        `observedSlot` 은 화면에서 실제로 1등한 칸이고, **판정에 쓰지 않습니다.**
+        저장해 뒀다가 winner_slot 과 다르면 재생이 어긋난 것이므로 지표로 남기세요.
 
         멱등해야 합니다. 이미 정산된 라운드에 다시 들어오면 새로 뽑지 않고 처음 결과를
         그대로 돌려주며, 상품을 두 번 주지 않습니다.
@@ -153,25 +159,20 @@ paths:
           application/json:
             schema:
               type: object
-              required: [pickedNumber]
+              required: [observedSlot]
               properties:
-                pickedNumber:
+                observedSlot:
                   type: integer
-                  minimum: 1
-                  description: 1등으로 골인한 구슬 번호 (1-based)
+                  minimum: 0
+                  description: |
+                    화면에서 1등한 출발 칸 (0-based). 판정에는 쓰이지 않으며,
+                    서버가 아는 winner_slot 과 다르면 재생 불일치로 기록한다.
       responses:
         '200':
           description: 확정된 결과와 갱신된 잔액
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Settled' }
-        '400':
-          description: 번호가 1..fieldSize 범위를 벗어남
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
-              example:
-                error: { code: NUMBER_OUT_OF_RANGE, message: '구슬 번호가 범위를 벗어났습니다.' }
         '404':
           description: 알 수 없는 라운드거나 다른 도네이터의 라운드
           content:
@@ -325,14 +326,23 @@ components:
 
     StartedRound:
       type: object
-      required: [roundId, fieldSize, config, donator]
+      required: [roundId, labels, seed, config, donator]
       properties:
         roundId:
           type: string
           description: 1회용 토큰. 정산 후에는 재사용할 수 없다
-        fieldSize:
+        labels:
+          type: array
+          items: { type: string }
+          description: |
+            각 출발 칸에 놓을 구슬 이름. labels[i] 가 i 번 칸이다. 상품 이름 그대로
+            내려주며, 상품에 없는 이름(꽝)은 클라이언트가 회색 구슬로 그린다.
+        seed:
           type: integer
-          description: 구슬 수. 클라이언트는 1..fieldSize 번호 구슬을 굴린다
+          format: int64
+          description: |
+            결정적 재생용 32비트 시드. 시드 풀에서 꺼낸 값이고, 서버는 이 시드의
+            1등 칸을 이미 알고 있다.
         config: { $ref: '#/components/schemas/GameConfig' }
         donator:
           allOf: [{ $ref: '#/components/schemas/Donator' }]
@@ -340,10 +350,12 @@ components:
 
     RoundOutcome:
       type: object
-      required: [roundId, pickedNumber, prize, cornDelta, entryFee]
+      required: [roundId, winnerSlot, prize, cornDelta, entryFee]
       properties:
         roundId: { type: string }
-        pickedNumber: { type: integer }
+        winnerSlot:
+          type: integer
+          description: 서버가 아는 1등 칸 (0-based)
         prize:
           allOf: [{ $ref: '#/components/schemas/Prize' }]
           nullable: true
@@ -414,7 +426,6 @@ components:
                 - UNAUTHORIZED
                 - INSUFFICIENT_CORN
                 - ROUND_NOT_FOUND
-                - NUMBER_OUT_OF_RANGE
                 - CONFIG_INVALID
               description: |
                 프론트가 코드로 분기합니다. INSUFFICIENT_CORN 이면 충전 안내 팝업을 띄우고,

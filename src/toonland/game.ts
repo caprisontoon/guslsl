@@ -1,5 +1,5 @@
 import options from '../options';
-import type { Roulette } from '../roulette';
+import type { MarbleSpec, Roulette } from '../roulette';
 import { type GameApi, InsufficientCornError, type Settled } from './api';
 import { mapLabel } from './mapLabels';
 import { apportion, availablePrizes, effectiveOdds, totalPrizeProbability } from './prizeTable';
@@ -10,6 +10,19 @@ const KIND_LABELS: Record<Prize['kind'], string> = {
   inventory: '인벤토리',
   cash: '캐시',
 };
+
+/**
+ * 상품마다 다른 색을 준다. 값이 큰 상품일수록 앞쪽(금색 계열)을 받아서
+ * 레이스 중에 어떤 구슬이 굴러오는지 한눈에 알아볼 수 있게 한다.
+ * 사이드바 상품 목록에도 같은 색 점을 찍어 범례 역할을 시킨다.
+ */
+const PRIZE_HUES = [45, 205, 285, 155, 15, 325, 185, 95, 265, 130];
+
+/** 값이 큰 상품부터 팔레트 앞쪽 색을 갖는다 */
+function hueByPrize(prizes: Prize[]): Map<string, number> {
+  const ranked = [...prizes].sort((a, b) => b.cornValue - a.cornValue);
+  return new Map(ranked.map((prize, i) => [prize.name, PRIZE_HUES[i % PRIZE_HUES.length]]));
+}
 
 function el<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -81,7 +94,7 @@ export class RaceGame {
     });
 
     this.roulette.addEventListener('goal', (e) => {
-      void this.onGoal((e as CustomEvent).detail?.winner as string | undefined);
+      void this.onGoal(Number((e as CustomEvent).detail?.winnerSlot ?? -1));
     });
   }
 
@@ -119,14 +132,18 @@ export class RaceGame {
       );
     } else {
       const odds = new Map(effectiveOdds(this.config).map((row) => [row.label, row.actual]));
+      const hues = hueByPrize(this.config.prizes);
       list.replaceChildren(
         ...prizes.map((prize) => {
           const li = document.createElement('li');
           li.className = 'tl-prize';
           li.innerHTML = `
+            <span class="tl-prize__dot"></span>
             <span class="tl-prize__kind tl-prize__kind--${prize.kind}">${KIND_LABELS[prize.kind]}</span>
             <span class="tl-prize__name"></span>
             <span class="tl-prize__odds"></span>`;
+          const hue = hues.get(prize.name) ?? 0;
+          li.querySelector<HTMLElement>('.tl-prize__dot')!.style.background = `hsl(${hue} 100% 62%)`;
           li.querySelector('.tl-prize__name')!.textContent = prize.name;
           li.querySelector('.tl-prize__odds')!.textContent =
             `${(odds.get(prize.name) ?? prize.probability).toFixed(2)}%`;
@@ -138,8 +155,8 @@ export class RaceGame {
     const loseChance = Math.max(0, 100 - totalPrizeProbability(prizes));
     el('loseNote').textContent =
       this.config.consolationCorn > 0
-        ? `꽝 ${loseChance.toFixed(2)}% · 꽝이어도 기본 혜택 ${num(this.config.consolationCorn)} 강냉이를 드려요.`
-        : `꽝 ${loseChance.toFixed(2)}%`;
+        ? `회색 구슬은 꽝 ${loseChance.toFixed(2)}% · 꽝이어도 기본 혜택 ${num(this.config.consolationCorn)} 강냉이를 드려요.`
+        : `회색 구슬은 꽝 ${loseChance.toFixed(2)}%`;
   }
 
   /** 공개된 확률 테이블만으로 구슬 수와 당첨 확률 칩을 채운다 */
@@ -178,28 +195,26 @@ export class RaceGame {
     el('stageIdle').hidden = true;
     this.setPlayButton(true);
 
-    // 구슬에는 번호만 적는다. 어떤 번호가 무슨 상품인지는 서버만 알고,
-    // 결과는 골인한 번호를 서버에 물어봐서 받는다
-    const numbers = Array.from({ length: started.fieldSize }, (_, i) => String(i + 1));
-    this.roulette.setMarbles(numbers);
+    // 구슬에는 상품 이름을 그대로 적는다. 어느 칸에 무엇을 놓을지는 서버가 정했고,
+    // 실서버는 시드로 1등 칸을 이미 알고 있어서 화면에 다 보여줘도 조작할 수 없다
+    const hues = hueByPrize(this.config.prizes);
+    const specs: MarbleSpec[] = started.labels.map((label) => {
+      const hue = hues.get(label);
+      return hue === undefined ? { label, hue: 0, muted: true } : { label, hue };
+    });
+    this.roulette.setMarbles(specs, started.seed);
     this.roulette.setWinnerRange(0, 0);
     this.roulette.start();
   }
 
-  private async onGoal(winnerLabel: string | undefined): Promise<void> {
+  private async onGoal(observedSlot: number): Promise<void> {
     if (!this.running || !this.roundId) return;
     this.running = false;
     this.setPlayButton(false);
 
-    const pickedNumber = Number(winnerLabel);
-    if (!Number.isInteger(pickedNumber)) {
-      this.toast('골인한 구슬 번호를 읽지 못했습니다.');
-      return;
-    }
-
     let settled: Settled;
     try {
-      settled = await this.api.settleRound(this.roundId, pickedNumber);
+      settled = await this.api.settleRound(this.roundId, observedSlot);
     } catch (e) {
       this.toast(e instanceof Error ? e.message : '결과를 저장하지 못했습니다.');
       return;
@@ -218,7 +233,6 @@ export class RaceGame {
     const won = !!outcome.prize;
     el('resultEmoji').textContent = won ? '🎉' : '😢';
     el('resultTitle').textContent = won ? '당첨을 축하드려요!' : '아쉽네요, 꽝이에요';
-    el('resultNumber').textContent = `${num(outcome.pickedNumber)}번 구슬 1등`;
     el('resultPrize').textContent = outcome.prize ? outcome.prize.name : this.config.loseLabel;
 
     if (won && outcome.prize) {

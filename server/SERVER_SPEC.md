@@ -11,42 +11,53 @@
 **같은 결과**를 내야 합니다. 그 파일이 기준 구현이고, 실물 물리 8000판으로 검증돼
 있습니다 (`yarn verify:odds 8000`).
 
+## 이 설계의 뼈대
+
+물리 엔진이 결정적입니다. **(시드, 구슬 수, 맵)** 이 같으면 언제 어디서 돌려도 같은
+칸의 구슬이 1등합니다. SIMD 빌드와 스칼라 빌드도 같은 결과를 냅니다(브라우저마다
+다른 빌드를 쓰기 때문에 확인했습니다).
+
+그래서 이렇게 합니다.
+
+```
+오프라인 배치   yarn seeds 100 5000 0  ->  (seed, winner_slot) 표를 race_seed_pool 에 적재
+POST /rounds    시드 한 줄을 꺼내고, 뽑은 상품을 winner_slot 칸에 올려 labels 를 만든다
+                클라이언트에 { seed, labels } 를 준다
+클라이언트      그 시드로 레이스를 재생한다 -> winner_slot 의 구슬이 1등한다
+POST /settle    서버는 저장해 둔 winner_slot 으로 판정한다. 클라이언트에게 묻지 않는다
+```
+
+**구슬에 상품 이름을 다 보여줘도 안전합니다.** 서버가 답을 이미 알고 있고 정산에
+클라이언트 입력을 쓰지 않으므로, 브라우저를 조작해도 바꿀 게 없습니다.
+
+백엔드가 물리 엔진을 돌릴 필요는 없습니다. 시드 풀만 미리 채워두면 됩니다.
+
 ## 절대 지켜야 할 세 가지
 
-이 세 가지가 깨지면 브라우저 조작으로 상위 상품을 뽑을 수 있습니다.
-
-1. **번호 → 상품 매핑을 응답에 담지 않는다.** `POST /rounds` 가 내려줄 것은
-   `fieldSize` 뿐입니다. 디버그 로그나 에러 응답에도 새지 않게 하세요.
-2. **번호 범위를 검증한다.** `1 <= pickedNumber <= fieldSize` 가 아니면 거부합니다.
+1. **정산은 `race_round.winner_slot` 으로만 한다.** 요청 본문의 `observedSlot` 은
+   판정에 쓰지 않습니다. 저장해 두었다가 `winner_slot` 과 다르면 재생 불일치로
+   지표에 남기세요. 이 비율이 0 이 아니면 결정성이 깨진 것이니 조사해야 합니다.
+2. **시드 배정을 참가비 차감보다 먼저 한다.** 시드 풀이 비었거나 설정이 잘못돼
+   라운드를 못 열면, 강냉이가 빠지기 전에 실패해야 합니다.
 3. **라운드 토큰은 1회용이고 정산은 멱등하다.** 이미 정산된 라운드에 다시 들어오면
    새로 뽑지 않고 처음 결과를 그대로 돌려줍니다.
 
-## 확률 → 구슬 개수 환산 (`apportion`)
+## 시드 풀 채우기
 
-최대잔여법입니다. 개수 합이 정확히 `fieldSize` 가 되고, 각 상품의 실제 확률은
-`개수 / fieldSize` 입니다.
-
-```
-입력: prizes (노출 중이고 당첨 한도가 남은 것만), fieldSize
-1. losePercent = max(0, 100 - sum(prize.probability))
-2. entries = prizes + [꽝(losePercent)]
-3. total = sum(entries.probability)
-   total <= 0 이면 전부 꽝으로 채우고 종료
-4. raw[i]   = entries[i].probability / total * fieldSize
-   count[i] = floor(raw[i])
-5. left = fieldSize - sum(count)
-   raw 의 소수부가 큰 순서로 left 개에 1씩 더한다
-6. 결과: [(prize|null, count)]
+```shell
+yarn seeds <구슬수> <개수> <맵번호> > pool.csv
+# 예: yarn seeds 100 5000 0 > pool.csv
 ```
 
-주의할 점:
+`map_index,field_size,seed,winner_slot` 형식의 CSV 가 나옵니다. 그대로
+`race_seed_pool` 에 적재하세요. 시드 하나당 약 0.2초 걸립니다.
 
-- **당첨 한도가 찬 상품은 3단계 이전에 빼야 합니다.** 그 확률은 자동으로 꽝에 흡수됩니다.
-- 확률 합계가 100%를 넘으면 정규화되어 꽝이 0개가 됩니다. 저장 시점에 막는 게 맞지만
-  (아래 `PUT /config` 검증), 런타임에서도 터지지 않고 동작합니다.
-- 소수부가 같을 때의 순서만 다르면 개수가 1개 차이날 수 있습니다. 확률에 영향을 주는
-  수준은 아니지만, 프론트와 정확히 같은 결과를 원하면 `prizeTable.ts` 의
-  정렬(`b.frac - a.frac`, 동률이면 원래 순서 유지)을 그대로 따르세요.
+관리자가 **구슬 수나 맵을 바꾸면 그 조합의 시드가 따로 필요합니다.** 쓸 조합을 미리
+채워두고, 남은 개수가 임계치 아래로 떨어지면 배치로 보충하세요. 조합에 맞는 시드가
+없으면 라운드를 열 수 없습니다(409).
+
+시드를 재사용해도 확률은 망가지지 않습니다(상품 배치는 매 판 새로 뽑으므로). 다만
+같은 레이스 장면이 반복되어 눈에 띄므로 `used_at` 으로 안 쓴 것부터 꺼내세요.
 
 ## `GET /config`
 
@@ -90,29 +101,40 @@
 ```
 
 진행 중인 라운드는 자기 시작 시점의 `entry_fee` / `consolation_corn` /
-`prize_by_number` 로 정산됩니다. 설정을 바꿔도 이미 열린 라운드에는 영향이 없습니다.
+`labels` / `winner_slot` 으로 정산됩니다. 설정을 바꿔도 이미 열린 라운드에는 영향이 없습니다.
 
 ## `POST /rounds` — 라운드 열기
 
-**순서가 중요합니다.** 매핑 생성이 참가비 차감보다 먼저여야 합니다.
+**순서가 중요합니다.** 시드 배정이 참가비 차감보다 먼저여야 합니다.
 
 ```
 1. 로그인 확인 -> 없으면 401 UNAUTHORIZED
 2. 적용 중인 설정을 읽는다
 3. 당첨 한도가 남은 상품만 골라 apportion() -> [(prize|null, count)]
-4. prizeByNumber = 개수만큼 펼친 배열을 셔플
-   (Fisher-Yates, 암호학적 난수 사용 권장)
-5. prizeByNumber.length < 2 이면 409 CONFIG_INVALID 로 종료
-   — 차감 전이므로 강냉이가 빠지지 않는다
-6. 트랜잭션
+   개수만큼 펼쳐 배열 field 를 만든다 (길이 = fieldSize)
+4. field.length < 2 이면 409 CONFIG_INVALID 로 종료
+5. 시드 풀에서 (map_index, field_size) 가 맞고 안 쓴 줄을 하나 꺼낸다
+   없으면 409 CONFIG_INVALID (배치로 보충 필요)
+6. 이번 판의 당첨 상품을 뽑는다
+   field 를 셔플한 뒤 맨 앞을 winner 로 삼으면 된다. field 의 구성이 곧 확률이므로
+   가중 추첨과 같다 (암호학적 난수 권장)
+7. labels 를 만든다
+   labels[winner_slot] = winner 의 이름 (꽝이면 loseLabel)
+   나머지 칸에는 field 에서 winner 를 하나 뺀 나머지를 셔플해서 채운다
+   -> 화면에 보이는 구성이 설정 확률과 정확히 같아진다
+8. 트랜잭션
    a. 회원 강냉이 잔액을 행 잠금으로 읽는다 (SELECT ... FOR UPDATE)
    b. corn < entryFee 이면 롤백하고 402 INSUFFICIENT_CORN (need, have 포함)
    c. corn -= entryFee
-   d. race_round INSERT (id = UUID, prize_by_number, entry_fee, field_size,
-      consolation_corn, member_idx)
-7. { roundId, fieldSize, config, donator } 반환
-   — prizeByNumber 는 넣지 않는다
+   d. 시드 줄에 used_at 을 찍는다
+   e. race_round INSERT (id = UUID, seed, winner_slot, labels, won_prize_id,
+      entry_fee, field_size, map_index, consolation_corn, member_idx)
+9. { roundId, seed, labels, config, donator } 반환
 ```
+
+7단계를 이렇게 하는 이유: 1등 칸에 뽑힌 상품을 먼저 박고 나머지를 채우면, 각 상품이
+화면에 나오는 개수가 설정 분포와 같으면서도 1등 칸의 상품은 정확히 6단계에서 뽑은
+값이 됩니다. 확률과 연출이 동시에 맞습니다.
 
 라운드가 중간에 끊겨도 참가비는 소모된 것으로 처리합니다 (당첨왕의 "칸 구매 시 즉시
 차감"과 같은 정책). 환불하고 싶다면 `settled_at IS NULL AND created_at < now() - 30분`
@@ -127,11 +149,11 @@
    a. race_round 를 행 잠금으로 읽는다 (SELECT ... FOR UPDATE)
       없거나 member_idx 가 다르면 404 ROUND_NOT_FOUND
    b. settled_at 이 이미 있으면 (멱등 경로)
-         저장된 picked_number / won_prize_id / corn_delta 로 응답을 만들어 반환
+         저장된 winner_slot / won_prize_id / corn_delta 로 응답을 만들어 반환
          — 상품을 다시 지급하지 않는다
-   c. pickedNumber 검증: 정수이고 1..field_size 범위
-         아니면 400 NUMBER_OUT_OF_RANGE
-   d. prizeId = prize_by_number[pickedNumber - 1]
+   c. observed_slot = 요청 본문의 observedSlot 을 그대로 기록만 한다
+      winner_slot 과 다르면 재생 불일치 지표를 올린다. 판정에는 쓰지 않는다
+   d. prizeId = race_round.won_prize_id  (라운드를 열 때 이미 정해졌다)
    e. 상품이 있으면 당첨 한도를 원자적으로 잡는다
          UPDATE race_prize_award
             SET awarded = awarded + 1
@@ -143,8 +165,8 @@
          cash      : 회원 캐시   += payout,  cornDelta = 0
          inventory : 회원 인벤토리에 payout(아이템 idx) 지급, cornDelta = 0
          꽝        : 회원 강냉이 += consolation_corn, cornDelta = consolation_corn
-   g. race_round UPDATE (settled_at, picked_number, won_prize_id, corn_delta,
-      reward_label)
+   g. race_round UPDATE (settled_at, observed_slot, corn_delta, reward_label)
+      — 한도 소진으로 꽝이 됐다면 won_prize_id 를 NULL 로 되돌린다
 3. { outcome, donator } 반환
 ```
 
@@ -234,11 +256,13 @@ SELECT DATE(settled_at)                          AS date,
 
 붙인 뒤 이것들을 확인하세요.
 
-- [ ] `POST /rounds` 응답 어디에도 번호별 상품 정보가 없다
+- [ ] `observedSlot` 에 아무 값이나 넣어도 결과가 달라지지 않는다 (판정에 안 쓰임)
 - [ ] 같은 `roundId` 로 두 번 정산해도 상품이 한 번만 지급된다
-- [ ] `pickedNumber` 를 0, `fieldSize + 1`, 소수, 문자열로 보내면 거부된다
 - [ ] 남은 당첨 인원이 1인 상품에 동시 요청 2개를 보내면 한 명만 받는다
 - [ ] 강냉이가 참가비보다 적으면 차감 없이 402 가 온다
+- [ ] 시드 풀이 빈 (맵, 구슬 수) 조합은 차감 없이 409 가 온다
 - [ ] 구슬 수를 1로 만든 설정은 저장 단계에서 막히고, 혹시 들어가도 차감 없이 409 가 온다
 - [ ] 예약 설정이 지정 시각에 적용되고, 진행 중이던 라운드는 옛 설정으로 정산된다
 - [ ] 서버 `apportion()` 결과가 프론트 `apportion()` 과 같은 개수를 낸다
+- [ ] **재생 불일치율이 0 이다** (`observed_slot != winner_slot` 인 라운드 수)
+      0 이 아니면 결정성이 깨진 것이다. 엔진을 고치기 전까지 배포하면 안 된다

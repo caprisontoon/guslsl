@@ -17,7 +17,8 @@
     "build": "parcel build index.html admin.html --public-url /roulette/ && node scripts/build-sw.js",
     "build:vercel": "parcel build index.html admin.html --public-url /",
     "simulate": "tsx scripts/simulate.ts",
-    "verify:odds": "tsx scripts/verify-odds.ts"
+    "verify:odds": "tsx scripts/verify-odds.ts",
+    "seeds": "tsx scripts/seed-pool.ts"
   },
   "dependencies": {
     "box2d-wasm": "^7.0.0"

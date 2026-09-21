@@ -111,9 +111,9 @@ export class ToonationGameApi implements GameApi {
     return this.request('POST', `${this.options.baseUrl}/rounds`);
   }
 
-  settleRound(roundId: string, pickedNumber: number): Promise<Settled> {
+  settleRound(roundId: string, observedSlot: number): Promise<Settled> {
     return this.request('POST', `${this.options.baseUrl}/rounds/${encodeURIComponent(roundId)}/settle`, {
-      pickedNumber,
+      observedSlot,
     });
   }
 

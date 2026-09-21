@@ -50,30 +50,57 @@ CREATE TABLE race_config_revision (
 -- 라운드
 -- ---------------------------------------------------------------------------
 
--- 한 판. prize_by_number 가 이 설계의 핵심이고 절대 클라이언트로 내려가지 않는다.
+-- 미리 계산해 둔 시드 풀. 이 설계의 핵심이다.
 --
--- 구슬에는 번호만 적혀 있고, 어떤 번호가 무슨 상품인지는 이 컬럼에만 있다.
--- 그래서 브라우저를 조작해 다른 번호를 신고해도 기대값이 달라지지 않는다.
+-- 물리 엔진이 결정적이라 (시드, 구슬 수, 맵) 이 같으면 항상 같은 칸이 1등한다.
+-- 그 답을 오프라인 배치로 미리 구해 놓으면, 백엔드는 물리를 돌리지 않고도 1등 칸을
+-- 알 수 있다. 덕분에 스택을 가리지 않고, 구슬에 상품 이름을 다 보여줘도 안전하다.
+--
+--   yarn seeds 100 5000 0 > pool.csv     구슬 100개 / 맵 0 짜리 시드 5000개
+--
+-- 구슬 수나 맵을 바꾸면 그 조합으로 다시 뽑아야 한다. 관리자에서 쓸 조합을 미리
+-- 채워두고, 남은 개수가 줄면 배치로 보충한다.
+CREATE TABLE race_seed_pool (
+  id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+  map_index   INT      NOT NULL,
+  field_size  INT      NOT NULL,
+  seed        BIGINT   NOT NULL COMMENT '32비트 부호 없는 정수. 클라이언트에 그대로 내려간다',
+  winner_slot INT      NOT NULL COMMENT '이 시드로 굴렸을 때 1등하는 출발 칸 (0-based)',
+  used_at     DATETIME NULL COMMENT '쓴 시드는 표시해 둔다. 재사용해도 무방하지만 결과가 반복된다',
+
+  INDEX idx_race_seed_pick (map_index, field_size, used_at, id)
+);
+
+-- 한 판.
+--
+-- winner_slot 이 판정의 근거다. 라운드를 열 때 시드 풀에서 가져와 박아두고, 정산은
+-- 이 값으로만 한다. 클라이언트가 보낸 observed_slot 은 재생이 어긋났는지 보는
+-- 지표일 뿐 판정에 쓰지 않는다.
 CREATE TABLE race_round (
   id               CHAR(36)     PRIMARY KEY COMMENT '라운드 토큰 (UUID)',
   member_idx       BIGINT       NOT NULL COMMENT '투네이션 회원 idx',
   created_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   entry_fee        INT          NOT NULL COMMENT '차감한 참가비. 설정이 바뀌어도 이 값으로 정산',
   field_size       INT          NOT NULL,
+  map_index        INT          NOT NULL,
   consolation_corn INT          NOT NULL COMMENT '라운드 시작 시점의 기본 혜택',
-  prize_by_number  JSON         NOT NULL COMMENT '[prizeId|null] * field_size. 응답에 절대 포함하지 말 것',
+  seed             BIGINT       NOT NULL COMMENT '클라이언트에 내려준 재생 시드',
+  winner_slot      INT          NOT NULL COMMENT '시드 풀에서 가져온 1등 칸. 정산의 근거',
+  labels           JSON         NOT NULL COMMENT '[상품이름|꽝] * field_size. 칸 순서대로',
+  won_prize_id     VARCHAR(40)  NULL COMMENT '라운드를 열 때 뽑은 상품. 꽝이면 NULL',
 
   -- 정산 결과. settled_at 이 NULL 이면 아직 안 끝난 라운드다.
   settled_at       DATETIME     NULL,
-  picked_number    INT          NULL,
-  won_prize_id     VARCHAR(40)  NULL COMMENT '꽝이면 NULL',
+  observed_slot    INT          NULL COMMENT '화면에서 1등한 칸. winner_slot 과 다르면 재생 불일치',
   corn_delta       INT          NULL COMMENT '지급된 강냉이 (꽝 기본 혜택 포함)',
   reward_label     VARCHAR(120) NULL COMMENT '게임참여내역에 보여줄 문자열',
 
   INDEX idx_race_round_member (member_idx, created_at DESC),
   INDEX idx_race_round_settled (settled_at),
   -- 미정산 라운드를 환불하는 배치가 쓸 인덱스
-  INDEX idx_race_round_stale (settled_at, created_at)
+  INDEX idx_race_round_stale (settled_at, created_at),
+  -- 재생 불일치율을 뽑는 지표 쿼리용
+  INDEX idx_race_round_mismatch (settled_at, observed_slot, winner_slot)
 );
 
 -- 상품별 지급 수량. 당첨 인원(winnerLimit) 한도를 동시성 안전하게 관리한다.
