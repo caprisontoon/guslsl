@@ -24,6 +24,24 @@ export class Box2dPhysics implements IPhysics {
     this.clearEntities();
   }
 
+  /**
+   * 월드를 통째로 새로 만든다.
+   *
+   * clear() + createStage() 만으로는 직전 판의 흔적(파괴 대기 중인 바디, 접촉 정보 등)이
+   * 남아서 같은 시드라도 앞서 무엇을 돌렸느냐에 따라 1등이 달라진다. 그러면 서버가 미리
+   * 계산해 둔 1등과 화면이 어긋나므로, 판마다 완전히 빈 월드에서 시작해야 한다
+   */
+  resetWorld(): void {
+    if (this.world) {
+      this.Box2D.destroy(this.world);
+    }
+    this.marbleMap = {};
+    this.entities = [];
+    this.deleteCandidates = [];
+    this.gravity = new this.Box2D.b2Vec2(0, 10);
+    this.world = new this.Box2D.b2World(this.gravity);
+  }
+
   clearMarbles(): void {
     Object.values(this.marbleMap).forEach((body) => {
       this.world.DestroyBody(body);
@@ -100,7 +118,7 @@ export class Box2dPhysics implements IPhysics {
     this.entities = [];
   }
 
-  createMarble(id: number, x: number, y: number): void {
+  createMarble(id: number, x: number, y: number, density: number): void {
     const circleShape = new this.Box2D.b2CircleShape();
     circleShape.set_m_radius(0.25);
 
@@ -109,16 +127,16 @@ export class Box2dPhysics implements IPhysics {
     bodyDef.set_position(new this.Box2D.b2Vec2(x, y));
 
     const body = this.world.CreateBody(bodyDef);
-    body.CreateFixture(circleShape, 1 + Math.random());
+    body.CreateFixture(circleShape, density);
     body.SetAwake(false);
     body.SetEnabled(false);
     this.marbleMap[id] = body;
   }
 
-  shakeMarble(id: number): void {
+  shakeMarble(id: number, impulseX: number, impulseY: number): void {
     const body = this.marbleMap[id];
     if (body) {
-      body.ApplyLinearImpulseToCenter(new this.Box2D.b2Vec2(Math.random() * 10 - 5, Math.random() * 10 - 5), true);
+      body.ApplyLinearImpulseToCenter(new this.Box2D.b2Vec2(impulseX, impulseY), true);
     }
   }
 

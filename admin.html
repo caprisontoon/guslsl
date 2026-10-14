@@ -5,6 +5,14 @@
   <title>강냉이 레이스 관리자 - 투네랜드</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png">
+  <!-- 실서버에 붙일 때 아래 주석을 풀고 경로를 맞추세요. 태그가 없으면 시연 모드입니다.
+       자세한 내용은 server/SERVER_SPEC.md -->
+  <!--
+  <meta name="toonland-api-base" content="/api/toonland/race">
+  <meta name="toonland-admin-api-base" content="/api/admin/toonland/race">
+  <meta name="toonland-api-credentials" content="include">
+  -->
+
   <link rel='stylesheet' href='assets/admin.scss'/>
 </head>
 <body>
@@ -28,6 +36,7 @@
   </nav>
 
   <main class="ad-main">
+    <div class="ad-banner ad-banner--demo" id="demoBanner" hidden></div>
     <div class="ad-banner" id="pendingBanner" hidden></div>
 
     <!-- 상품 목록 -->

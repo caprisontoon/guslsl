@@ -458,7 +458,7 @@ h3 {
 
 .tl-prize {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
@@ -741,19 +741,28 @@ h3 {
   }
 }
 
-// 결과 모달에서 1등 번호를 먼저 보여주고, 그 아래에 상품을 공개한다
-.tl-result__number {
-  margin: 10px 0 0;
-  display: inline-block;
-  padding: 4px 14px;
-  border-radius: 999px;
-  background: var(--tl-surface-2);
-  border: 1px solid var(--tl-line);
+// 시연 모드 알림. 서버에 붙지 않은 상태를 눈에 보이게 해서
+// 실서버로 착각한 채 테스트하는 일을 막는다
+.tl-demo {
+  margin: 0;
+  padding: 10px 20px;
+  background: #fff6dc;
+  border-bottom: 1px solid #ffdf94;
+  color: #8a6200;
   font-size: 13px;
-  font-weight: 700;
-  color: var(--tl-ink-2);
+  font-weight: 600;
+  text-align: center;
 
-  &:empty {
+  &[hidden] {
     display: none;
   }
+}
+
+// 상품 목록의 색 점. 레이스 화면의 구슬 색과 짝을 이루는 범례다
+.tl-prize__dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: none;
+  box-shadow: inset 0 -1px 2px rgba(0, 0, 0, 0.25);
 }

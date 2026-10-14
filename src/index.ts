@@ -1,18 +1,19 @@
 import { Roulette } from './roulette';
-import { LocalGameApi } from './toonland/api';
+import { createGameApi } from './toonland/apiFactory';
 import { RaceGame } from './toonland/game';
 
 const roulette = new Roulette();
 
-/**
- * 게임 API 구현만 갈아끼우면 투네이션 서버에 붙는다. 기본값은 브라우저 저장소로
- * 도는 단독 실행용 구현이다. 연동 방법은 INTEGRATION.md 참고.
- */
-const api = new LocalGameApi();
-
 async function boot() {
-  const game = new RaceGame(roulette, api);
+  // 실서버에 붙을지 시연 모드로 돌지는 HTML 메타 태그가 정한다 (INTEGRATION.md 참고)
+  const { api, mode, chargeUrl } = createGameApi();
+  const game = new RaceGame(roulette, api, chargeUrl);
   await game.init();
+
+  if (mode === 'demo') {
+    const badge = document.getElementById('demoBadge');
+    if (badge) badge.hidden = false;
+  }
 }
 
 function whenEngineReady(run: () => void) {

@@ -1,23 +1,44 @@
 # 투네이션 백엔드 연동 가이드
 
 강냉이 레이스는 백엔드에 대한 의존을 `GameApi` 인터페이스 하나로 모아 두었습니다.
-이 인터페이스만 구현해서 갈아끼우면 게임·관리자 화면 코드는 그대로 둔 채 투네이션
-서버에 붙습니다.
+프론트에는 이미 HTTP 구현(`ToonationGameApi`)이 들어 있으니, **서버만 계약대로
+만들면 코드 수정 없이 붙습니다.**
 
-## 1. 갈아끼우는 지점
+| 파일 | 내용 |
+|---|---|
+| [`server/openapi.yaml`](./server/openapi.yaml) | API 계약. 경로·요청·응답·오류 코드 |
+| [`server/SERVER_SPEC.md`](./server/SERVER_SPEC.md) | 엔드포인트별 알고리즘, 트랜잭션 경계, 점검 목록 |
+| [`server/schema.sql`](./server/schema.sql) | 게임 전용 테이블 DDL |
+| `src/toonland/httpApi.ts` | 프론트 HTTP 클라이언트 (이미 구현됨) |
+| `src/toonland/api.ts` | `GameApi` 인터페이스 정의 |
 
-기본 구현은 브라우저 저장소로 도는 `LocalGameApi` 입니다. 서버 없이 전체 흐름을
-시연할 수 있게 넣어둔 것이고, 실제 서비스에서는 쓰지 않습니다.
+## 1. 붙이는 방법
 
-```ts
-// src/index.ts
-const api = new LocalGameApi();          // -> new ToonationGameApi()
+HTML 에 메타 태그만 넣으면 됩니다. 빌드를 다시 하지 않아도 되고, 배포 환경마다
+다른 값을 쓸 수 있습니다.
 
-// src/admin/index.ts
-new AdminApp(new LocalGameApi()).init(); // -> new ToonationGameApi()
+```html
+<meta name="toonland-api-base" content="/api/toonland/race">
+<meta name="toonland-admin-api-base" content="/api/admin/toonland/race">
+<meta name="toonland-api-credentials" content="include">
+<meta name="toonland-charge-url" content="/charge">
 ```
 
-`GameApi` 정의는 `src/toonland/api.ts` 에 있습니다.
+`index.html` 과 `admin.html` 의 `<head>` 에 주석으로 넣어뒀으니 풀어서 경로만
+맞추면 됩니다.
+
+태그가 없으면 브라우저 저장소로 도는 **시연 모드**이고, 화면 상단에 그 사실을 알리는
+띠가 뜹니다. 실서버로 착각한 채 테스트하는 일을 막기 위한 장치입니다.
+
+Bearer 토큰을 쓴다면 `src/toonland/apiFactory.ts` 에서 `ToonationGameApi` 에
+`headers` 콜백을 넘기세요.
+
+```ts
+new ToonationGameApi({
+  baseUrl,
+  headers: () => ({ Authorization: `Bearer ${getToken()}` }),
+});
+```
 
 ## 2. 서버가 해줘야 하는 일
 
@@ -28,7 +49,7 @@ new AdminApp(new LocalGameApi()).init(); // -> new ToonationGameApi()
 | `pendingConfig()` | 예약 대기 중인 설정 | `GET /api/admin/toonland/race/config/pending` |
 | `getDonator()` | 로그인한 도네이터의 닉네임·등급·강냉이·캐시 | `GET /api/me` |
 | `startRound()` | **참가비만큼 강냉이를 차감**하고 라운드 토큰을 발급한다. 잔액이 모자라면 실패 | `POST /api/toonland/race/rounds` |
-| `settleRound(roundId, pickedNumber)` | 번호에 걸린 상품을 찾아 지급한다. 같은 라운드는 한 번만 정산 | `POST /api/toonland/race/rounds/{id}/settle` |
+| `settleRound(roundId, observedSlot)` | 서버가 저장해 둔 1등 칸으로 판정해 지급한다. 같은 라운드는 한 번만 정산 | `POST /api/toonland/race/rounds/{id}/settle` |
 | `listHistory()` | 게임참여내역 | `GET /api/toonland/race/history` |
 | `listRevisions()` | 확률 변경 이력 | `GET /api/admin/toonland/race/revisions` |
 | `dailyStats()` / `prizeStats()` | 도전 통계, 상품별 통계 | `GET /api/admin/toonland/race/stats/*` |
@@ -42,59 +63,50 @@ new AdminApp(new LocalGameApi()).init(); // -> new ToonationGameApi()
 
 ## 3. 당첨 판정은 서버가 한다
 
-구슬에는 **번호만** 적혀 있습니다. 번호 → 상품 매핑은 서버만 알고, 클라이언트에는
-내려가지 않습니다.
+구슬에는 **상품 이름이 그대로 보입니다.** 그래도 조작할 수 없는 이유는, 서버가 1등 칸을
+**미리 알고 있고** 정산에 클라이언트 입력을 쓰지 않기 때문입니다.
+
+물리 엔진이 결정적이라 가능한 구조입니다. `(시드, 구슬 수, 맵)` 이 같으면 언제 어디서
+돌려도 같은 칸이 1등합니다. 브라우저마다 다른 wasm 빌드(SIMD / 스칼라)를 쓰는데
+둘의 결과가 일치하는 것도 확인했습니다.
 
 ```
-startRound()   서버: 확률대로 상품 목록을 만들고 번호에 무작위 배정 -> 매핑은 서버에 보관
-               서버: 참가비 차감, 라운드 토큰 + 구슬 수(fieldSize)만 응답
-클라이언트     1..fieldSize 번호 구슬로 레이스. 어떤 번호가 뭔지 모른다
-settleRound()  클라이언트: "18번이 1등했다" 만 보고
-               서버: 매핑에서 18번의 상품을 찾아 지급하고 결과를 응답
+오프라인 배치  yarn seeds 100 5000 0  ->  (시드, 1등 칸) 표를 race_seed_pool 에 적재
+startRound()   시드 한 줄을 꺼내고, 균등 추첨으로 뽑은 상품을 그 1등 칸에 올린다
+               클라이언트에는 { seed, labels } 만 준다 (1등 칸은 알려주지 않는다)
+클라이언트     그 시드로 레이스를 재생한다 -> 서버가 아는 칸의 구슬이 1등한다
+settleRound()  서버가 저장해 둔 값으로 판정한다. 클라이언트에게 묻지 않는다
 ```
 
-브라우저를 조작해 다른 번호를 신고해도 이득이 없습니다. 매핑이 매 판 새로 섞이고
-숨겨져 있으므로 어떤 번호를 고르든 기대값이 같고, 라운드 토큰은 1회용이라 결과가
-마음에 들 때까지 다시 신고할 수도 없습니다. 당첨왕의 "게임이 끝나면 번호판이 뒤집히며
-당첨 번호가 공개되는" 연출과도 같은 구조입니다.
+백엔드가 물리 엔진을 돌릴 필요는 없습니다. 시드 표만 미리 채워두면 되므로 어떤
+스택이든 붙일 수 있습니다.
+
+시드 표는 **그때의 물리 설정으로** 계산한 값이라, 물리에 영향을 주는 것(`useSkills`,
+맵 도형, 물리 상수, box2d 버전)을 바꾸면 표를 새로 만들어야 합니다. 자세한 목록은
+[server/SERVER_SPEC.md](./server/SERVER_SPEC.md) 참고.
 
 서버 구현에서 지켜야 할 것은 세 가지입니다.
 
-1. **매핑을 응답에 담지 마세요.** `startRound()` 응답에 상품 배열이나 번호별 정보가
-   들어가면 이 설계의 의미가 없어집니다. 내려줄 것은 `fieldSize` 뿐입니다.
-2. **번호 범위를 검증하세요.** `1 <= pickedNumber <= fieldSize` 가 아니면 거부합니다.
-3. **라운드 토큰을 1회용으로 만드세요.** 정산된 라운드에 다시 들어온 요청은 새로 뽑지
-   않고 기존 결과를 그대로 돌려줘야 합니다.
+1. **정산은 서버가 저장한 1등 칸으로만 한다.** 요청 본문의 `observedSlot` 은 화면에서
+   실제로 1등한 칸이고, 판정에 쓰면 안 됩니다. 저장해 두었다가 서버 값과 다르면
+   **재생 불일치**로 지표에 남기세요. 이 값이 0 이 아니면 결정성이 깨진 것입니다.
+2. **시드 배정을 참가비 차감보다 먼저 한다.** 시드 풀이 비었거나 설정이 잘못돼
+   라운드를 못 열면, 강냉이가 빠지기 전에 실패해야 합니다.
+3. **라운드 토큰을 1회용으로 만들고 `settleRound()` 를 멱등하게 구현한다.**
 
-기본 구현(`LocalGameApi`)이 이 세 가지를 모두 지키고 있으니 참고하면 됩니다.
-다만 매핑을 메모리에 들고 있어서 새로고침하면 라운드가 사라지므로, 서버에서는
-라운드 테이블에 저장하세요.
-
-원한다면 정산 응답에 번호별 상품 전체를 실어 보내 당첨왕처럼 **번호판 공개 연출**을
-할 수도 있습니다. 정산이 끝난 뒤라면 매핑을 공개해도 안전합니다.
-
-**확률 테이블은 서버가 들고 있어야 합니다.** 클라이언트가 내려받는 설정은 화면에
-상품 목록과 확률을 보여주기 위한 것이고, 당첨 판정의 근거가 되어서는 안 됩니다.
+자세한 절차와 점검 목록은 [`server/SERVER_SPEC.md`](./server/SERVER_SPEC.md) 에 있습니다.
 
 ## 4. 확률이 지켜지는 원리
 
 관리자가 넣은 확률(%)은 `apportion()` 이 최대잔여법으로 **구슬 개수**로 환산합니다.
 개수의 합은 언제나 정확히 `fieldSize` 이고, 각 상품의 실제 확률은 `개수 / fieldSize` 입니다.
 
-배정은 두 단계이고 둘 다 균등한 셔플입니다.
-
-1. 서버가 상품 목록을 **번호**에 배정합니다 (`LocalGameApi.startRound`).
-2. 엔진이 번호를 **출발 칸**에 배치합니다 (`setMarbles`).
-
-출발 칸에는 유불리가 있습니다. 2000판을 돌려보면 칸별 승리 수가 0회에서 116회까지
-갈립니다(균등하면 20회). 그런데도 상품별 당첨 확률은 개수 비율과 일치합니다. 두 배정
-순열이 균등하고 물리와 독립이라 칸의 유불리가 상쇄되기 때문입니다.
-
-서버에서 `apportion()` 대신 가중 추첨을 써도 같습니다. 개수를 가중치로 하는 추첨과
-동치입니다.
+서버는 그 구성에서 **균등하게 하나를 뽑아** 이번 판의 당첨 상품을 정합니다. 물리는
+확률에 관여하지 않습니다. 시드는 어느 칸이 1등할지만 정하고, 뽑힌 상품을 그 칸에
+올려놓을 뿐입니다.
 
 ```shell
-yarn verify:odds 2000    # 실제 물리로 2000판을 돌려 설정 확률과 실측을 대조
+yarn verify:odds    # 환산 + 추첨 분포 + 재생 결정성
 ```
 
 `fieldSize` 가 확률 해상도를 정합니다. 100이면 1% 단위, 200이면 0.5% 단위까지 오차 없이
@@ -127,6 +139,9 @@ type Prize = {
 
 두 화면 모두 정적 파일이라 투네이션 프론트에 iframe 으로 얹거나, 마크업을 기존
 투네랜드 레이아웃에 옮겨 붙일 수 있습니다.
+
+강냉이가 부족할 때는 `toonland-charge-url` 로 지정한 캐시 충전 페이지를 새 창으로
+엽니다. 지정하지 않으면 안내 토스트만 띄웁니다.
 
 - 게임 화면 `index.html` — 헤더(도네이터 정보·강냉이 잔액)는 투네랜드 공통 헤더로
   교체하면 됩니다. 캔버스는 `[data-race-canvas]` 안에 붙고, 결과 모달은 1등 번호를

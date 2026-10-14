@@ -3,6 +3,7 @@ import type { IPhysics } from './IPhysics';
 import options from './options';
 import type { ColorTheme } from './types/ColorTheme';
 import type { VectorLike } from './types/VectorLike';
+import { makeRng, type Rng } from './utils/rng';
 import { transformGuard } from './utils/transformGuard';
 import { rad } from './utils/utils';
 import { Vector } from './utils/Vector';
@@ -17,6 +18,8 @@ export class Marble {
   weight: number = 1;
   skill: Skills = Skills.None;
   isActive: boolean = false;
+  /** 꽝 구슬. 색을 죽이고 이름을 그리지 않아 상품 구슬이 눈에 띄게 한다 */
+  muted: boolean = false;
 
   private _skillRate = 0.0005;
   private _coolTime = 5000;
@@ -26,6 +29,11 @@ export class Marble {
   private theme: ColorTheme = Themes.dark;
 
   private physics: IPhysics;
+  /**
+   * 이 구슬만의 난수 수열. 전역 Math.random 을 쓰면 여러 구슬이 한 수열을 나눠 쓰게
+   * 되어, 프레임당 스텝 수에 따라 소비 순서가 달라지고 같은 시드라도 결과가 갈린다
+   */
+  private rng: Rng;
 
   id: number;
 
@@ -53,23 +61,33 @@ export class Marble {
     return this.position.angle;
   }
 
-  constructor(physics: IPhysics, order: number, max: number, name?: string, weight: number = 1) {
+  constructor(
+    physics: IPhysics,
+    order: number,
+    max: number,
+    name?: string,
+    weight: number = 1,
+    seed?: number,
+    style?: { hue: number; muted?: boolean }
+  ) {
     this.name = name || `M${order}`;
     this.weight = weight;
     this.physics = physics;
+    this.rng = makeRng(seed ?? Math.floor(Math.random() * 0xffffffff));
 
     this._maxCoolTime = 1000 + (1 - this.weight) * 4000;
-    this._coolTime = this._maxCoolTime * Math.random();
+    this._coolTime = this._maxCoolTime * this.rng();
     this._skillRate = 0.2 * this.weight;
 
     const maxLine = Math.ceil(max / 10);
     const line = Math.floor(order / 10);
     const lineDelta = -Math.max(0, Math.ceil(maxLine - 5));
-    this.hue = (360 / max) * order;
-    this.color = `hsl(${this.hue} 100% 70%)`;
+    this.hue = style ? style.hue : (360 / max) * order;
+    this.muted = style?.muted ?? false;
+    this.color = `hsl(${this.hue} ${this.muted ? 8 : 100}% ${this.muted ? 55 : 70}%)`;
     this.id = order;
 
-    physics.createMarble(order, 10.25 + (order % 10) * 0.6, maxLine - line + lineDelta);
+    physics.createMarble(order, 10.25 + (order % 10) * 0.6, maxLine - line + lineDelta, 1 + this.rng());
   }
 
   /**
@@ -87,7 +105,7 @@ export class Marble {
       this._stuckTime += deltaTime;
 
       if (this._stuckTime > STUCK_DELAY) {
-        this.physics.shakeMarble(this.id);
+        this.physics.shakeMarble(this.id, this.rng() * 10 - 5, this.rng() * 10 - 5);
         this._stuckTime = 0;
       }
     } else {
@@ -111,7 +129,7 @@ export class Marble {
     }
 
     if (this._coolTime <= 0) {
-      this.skill = Math.random() < this._skillRate ? Skills.Impact : Skills.None;
+      this.skill = this.rng() < this._skillRate ? Skills.Impact : Skills.None;
       this._coolTime = this._maxCoolTime;
     }
   }
@@ -133,12 +151,11 @@ export class Marble {
     const viewPortTop = viewPort.y - viewPortHh;
     const viewPortBottom = viewPort.y + viewPortHh;
     const halfSize = this.size / 2;
-    const isOutsideView = (
+    const isOutsideView =
       this.x + halfSize < viewPortLeft ||
       this.x - halfSize > viewPortRight ||
       this.y + halfSize < viewPortTop ||
-      this.y - halfSize > viewPortBottom
-    );
+      this.y - halfSize > viewPortBottom;
     if (!isMinimap && isOutsideView) {
       return;
     }
@@ -153,7 +170,9 @@ export class Marble {
 
   private _renderMinimap(ctx: CanvasRenderingContext2D) {
     ctx.fillStyle = this.color;
+    ctx.globalAlpha = this.muted ? 0.45 : 1;
     this._drawMarbleBody(ctx, true);
+    ctx.globalAlpha = 1;
   }
 
   private _drawMarbleBody(ctx: CanvasRenderingContext2D, isMinimap: boolean) {
@@ -165,7 +184,8 @@ export class Marble {
   private _renderNormal(ctx: CanvasRenderingContext2D, zoom: number, outline: boolean, skin?: CanvasImageSource) {
     const hs = this.size / 2;
 
-    ctx.fillStyle = `hsl(${this.hue} 100% ${this.theme.marbleLightness + 25 * Math.min(1, this.impact / 500)}%`;
+    const sat = this.muted ? 8 : 100;
+    ctx.fillStyle = `hsl(${this.hue} ${sat}% ${this.theme.marbleLightness + 25 * Math.min(1, this.impact / 500)}%`;
 
     // ctx.shadowColor = this.color;
     // ctx.shadowBlur = zoom / 2;
@@ -181,7 +201,10 @@ export class Marble {
 
     ctx.shadowColor = '';
     ctx.shadowBlur = 0;
-    this._drawName(ctx, zoom);
+    // 꽝은 이름을 그리지 않는다. 100개 중 60개 넘게 '꽝'이 겹쳐 찍히면 상품 구슬이 묻힌다
+    if (!this.muted) {
+      this._drawName(ctx, zoom);
+    }
 
     if (outline) {
       this._drawOutline(ctx, 2 / zoom);
